@@ -11,9 +11,6 @@ pub struct DiscoveryConfig {
 
     /// Maximum number of files to output (0 = unlimited)
     pub max_files: usize,
-
-    /// Maximum queued files for backpressure (0 = unlimited)
-    pub file_queue_capacity: usize,
 }
 
 impl Default for DiscoveryConfig {
@@ -21,7 +18,6 @@ impl Default for DiscoveryConfig {
         Self {
             file_format: FileFormat::Parquet,
             max_files: 0,
-            file_queue_capacity: 1000,
         }
     }
 }
@@ -41,12 +37,6 @@ impl DiscoveryConfig {
     /// Set the maximum number of files to output.
     pub fn with_max_files(mut self, max_files: usize) -> Self {
         self.max_files = max_files;
-        self
-    }
-
-    /// Set the file queue capacity for backpressure.
-    pub fn with_file_queue_capacity(mut self, capacity: usize) -> Self {
-        self.file_queue_capacity = capacity;
         self
     }
 }

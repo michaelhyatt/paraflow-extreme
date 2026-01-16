@@ -35,9 +35,6 @@ pub struct SqsConfig {
 
     /// Batch size for SQS messages (max 10 per SQS API limit)
     pub batch_size: usize,
-
-    /// Maximum buffer capacity for backpressure (0 = unlimited)
-    pub buffer_capacity: usize,
 }
 
 impl SqsConfig {
@@ -51,7 +48,6 @@ impl SqsConfig {
             secret_key: None,
             profile: None,
             batch_size: 10, // SQS max
-            buffer_capacity: 100,
         }
     }
 
@@ -72,23 +68,16 @@ impl SqsConfig {
         self.batch_size = batch_size.min(10); // SQS limit
         self
     }
-
-    /// Set the buffer capacity for backpressure.
-    pub fn with_buffer_capacity(mut self, capacity: usize) -> Self {
-        self.buffer_capacity = capacity;
-        self
-    }
 }
 
 /// SQS output implementation with batching support.
 ///
 /// Sends discovered files as JSON messages to an SQS queue.
-/// Supports batching (up to 10 messages per request) and backpressure.
+/// Supports batching (up to 10 messages per request).
 pub struct SqsOutput {
     client: Client,
     queue_url: String,
     batch_size: usize,
-    buffer_capacity: usize,
     buffer: Arc<Mutex<Vec<DiscoveredFile>>>,
 }
 
@@ -100,7 +89,6 @@ impl SqsOutput {
             client,
             queue_url: config.queue_url,
             batch_size: config.batch_size.min(10), // SQS max is 10
-            buffer_capacity: config.buffer_capacity,
             buffer: Arc::new(Mutex::new(Vec::new())),
         })
     }
@@ -111,7 +99,6 @@ impl SqsOutput {
             client,
             queue_url: queue_url.into(),
             batch_size: 10,
-            buffer_capacity: 100,
             buffer: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -189,35 +176,6 @@ impl Output for SqsOutput {
         drop(buffer); // Release lock before sending
         self.send_batch(batch).await
     }
-
-    fn ready(&self) -> bool {
-        // This is a sync check, so we can't await
-        // For more accurate backpressure, use wait_ready()
-        if self.buffer_capacity == 0 {
-            return true;
-        }
-
-        // We can't check the buffer synchronously without blocking
-        // Return true and rely on wait_ready for actual backpressure
-        true
-    }
-
-    async fn wait_ready(&self) {
-        if self.buffer_capacity == 0 {
-            return;
-        }
-
-        loop {
-            let buffer = self.buffer.lock().await;
-            if buffer.len() < self.buffer_capacity {
-                return;
-            }
-            drop(buffer);
-
-            // Wait a bit before checking again
-            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        }
-    }
 }
 
 /// Build an SQS client from configuration.
@@ -283,11 +241,5 @@ mod tests {
         // Should cap at 10
         let config = SqsConfig::new("test-queue").with_batch_size(20);
         assert_eq!(config.batch_size, 10);
-    }
-
-    #[test]
-    fn test_sqs_config_buffer_capacity() {
-        let config = SqsConfig::new("test-queue").with_buffer_capacity(50);
-        assert_eq!(config.buffer_capacity, 50);
     }
 }
