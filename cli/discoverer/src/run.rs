@@ -16,6 +16,22 @@ use crate::progress::ProgressReporter;
 
 pub use pf_cli_common::init_logging;
 
+/// Sample file information for dry-run mode.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct SampleFile {
+    pub uri: String,
+    pub size_bytes: u64,
+}
+
+/// Extended discovery stats with sample files for dry-run mode.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct DryRunStats {
+    pub stats: DiscoveryStats,
+    pub samples: Vec<SampleFile>,
+}
+
 /// Execute the discoverer with the provided arguments.
 pub async fn execute(args: Cli) -> Result<DiscoveryStats> {
     // Build S3 configuration
@@ -52,6 +68,12 @@ pub async fn execute(args: Cli) -> Result<DiscoveryStats> {
 
     // Build partition configuration (prefixes to scan)
     let prefixes = build_partition_config(&args)?;
+
+    // Handle dry-run mode
+    if args.dry_run {
+        let dry_run_stats = run_dry_run(s3_client, &args, filter, config, prefixes).await?;
+        return Ok(dry_run_stats.stats);
+    }
 
     // Execute based on destination type
     let stats = match args.destination {
@@ -251,4 +273,105 @@ async fn run_discovery_with_prefixes<O: Output, F: Filter>(
     );
 
     Ok(stats)
+}
+
+/// Run discovery in dry-run mode (count and sample files without output).
+async fn run_dry_run<F: Filter>(
+    s3_client: aws_sdk_s3::Client,
+    args: &Cli,
+    filter: F,
+    config: DiscoveryConfig,
+    prefixes: Vec<String>,
+) -> Result<DryRunStats> {
+    use pf_cli_common::format_bytes;
+
+    let parallel_config = ParallelConfig::new()
+        .with_max_concurrent_lists(args.concurrency)
+        .with_max_parallel_prefixes(args.parallel_prefixes);
+
+    let lister = ParallelLister::new(s3_client, &args.bucket, parallel_config);
+
+    let mut stats = DiscoveryStats::new();
+    let mut samples: Vec<SampleFile> = Vec::new();
+    let max_files = config.max_files;
+    let sample_count = args.sample_count;
+
+    // Start progress reporter if enabled
+    let mut progress = ProgressReporter::new(args.progress, args.progress_interval);
+    progress.start();
+
+    eprintln!("Dry run mode - no files will be output\n");
+
+    debug!(
+        bucket = %args.bucket,
+        prefix_count = prefixes.len(),
+        "Starting dry-run multi-prefix discovery"
+    );
+
+    let stream = lister.list_prefixes(prefixes);
+    pin_mut!(stream);
+
+    while let Some(result) = stream.next().await {
+        // Check max files limit
+        if max_files > 0 && stats.files_output >= max_files {
+            debug!(max_files = max_files, "Reached max files limit");
+            break;
+        }
+
+        match result {
+            Ok(obj) => {
+                if filter.matches(&obj) {
+                    let uri = format!("s3://{}/{}", args.bucket, obj.key);
+
+                    // Collect sample files
+                    if samples.len() < sample_count {
+                        samples.push(SampleFile {
+                            uri: uri.clone(),
+                            size_bytes: obj.size,
+                        });
+                    }
+
+                    stats.record_output(obj.size);
+                    progress.record_output(obj.size);
+                } else {
+                    stats.record_filtered();
+                    progress.record_filtered();
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "Error listing S3 objects");
+                stats.record_error(format!("S3 listing error: {}", e));
+            }
+        }
+    }
+
+    // Stop progress reporter
+    progress.stop().await;
+
+    // Print dry-run summary
+    eprintln!("Dry run results:");
+    eprintln!("  Files matching:     {}", stats.files_output);
+    eprintln!("  Bytes total:        {}", format_bytes(stats.bytes_discovered));
+
+    if let Some(duration) = stats.duration() {
+        let secs = duration.num_milliseconds() as f64 / 1000.0;
+        eprintln!("  Scan duration:      {:.2}s", secs);
+    }
+
+    if !samples.is_empty() {
+        eprintln!();
+        eprintln!("Sample files (first {}):", samples.len());
+        for sample in &samples {
+            eprintln!("  {} ({})", sample.uri, format_bytes(sample.size_bytes));
+        }
+    }
+
+    info!(
+        files_output = stats.files_output,
+        files_filtered = stats.files_filtered,
+        bytes_discovered = stats.bytes_discovered,
+        "Dry run complete"
+    );
+
+    Ok(DryRunStats { stats, samples })
 }

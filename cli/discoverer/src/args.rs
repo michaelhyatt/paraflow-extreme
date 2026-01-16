@@ -68,6 +68,17 @@ pub struct Cli {
     #[arg(long, default_value = "0")]
     pub max_files: usize,
 
+    /// Dry run mode: count and preview files without outputting them
+    ///
+    /// Shows count, total size, and sample files matching the filters
+    /// without writing to stdout or SQS. Useful for testing configurations.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Number of sample files to show in dry-run mode (default: 5)
+    #[arg(long, default_value = "5")]
+    pub sample_count: usize,
+
     // === Partitioning Options ===
     /// Partitioning expression (e.g., "logs/${index}/${year}/")
     ///
