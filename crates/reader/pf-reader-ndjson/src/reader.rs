@@ -1,17 +1,27 @@
-//! NDJSON reader implementation.
+//! NDJSON reader implementation with true streaming support.
+//!
+//! This reader streams NDJSON files line-by-line with bounded memory usage,
+//! supporting both local files and S3 with optional gzip/zstd decompression.
 
-use crate::s3::{parse_s3_uri, S3Client};
+use crate::s3::parse_s3_uri;
 use arrow::datatypes::SchemaRef;
 use arrow_json::ReaderBuilder;
+use async_compression::tokio::bufread::{GzipDecoder, ZstdDecoder};
 use async_trait::async_trait;
-use bytes::Bytes;
-use futures::stream;
+use futures::{Stream, StreamExt};
+use object_store::aws::AmazonS3Builder;
+use object_store::local::LocalFileSystem;
+use object_store::path::Path as ObjectPath;
+use object_store::ObjectStore;
 use pf_error::{PfError, ReaderError, Result};
 use pf_traits::{BatchStream, FileMetadata, StreamingReader};
 use pf_types::Batch;
-use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
+use std::io::BufRead;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
+use tokio_util::io::StreamReader;
 use tracing::{debug, info, trace};
 
 /// Configuration for the NDJSON reader.
@@ -60,124 +70,131 @@ impl NdjsonReaderConfig {
     }
 }
 
+/// Compression type detected from file extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Compression {
+    None,
+    Gzip,
+    Zstd,
+}
+
+impl Compression {
+    /// Detect compression from URI/filename.
+    pub fn from_uri(uri: &str) -> Self {
+        let uri_lower = uri.to_lowercase();
+        if uri_lower.ends_with(".gz") || uri_lower.ends_with(".gzip") {
+            Compression::Gzip
+        } else if uri_lower.ends_with(".zst") || uri_lower.ends_with(".zstd") {
+            Compression::Zstd
+        } else {
+            Compression::None
+        }
+    }
+}
+
 /// Streaming NDJSON file reader.
 ///
-/// Supports reading from both local files and S3 URIs.
+/// Uses streaming I/O to read NDJSON files with O(batch_size) memory,
+/// enabling processing of files larger than available RAM.
+///
+/// # Memory Model
+///
+/// - S3/file buffer: 8 KB (BufReader)
+/// - Line buffer: ~1 KB per line (typical JSON record)
+/// - Current RecordBatch: 2-10 MB (batch_size rows × row width)
+///
+/// Total memory per thread stays bounded at ~15MB regardless of file size.
+///
+/// # Compression Support
+///
+/// Automatically detects and handles:
+/// - `.gz` / `.gzip` - Gzip compression
+/// - `.zst` / `.zstd` - Zstd compression
 pub struct NdjsonReader {
     config: NdjsonReaderConfig,
-    s3_client: Option<S3Client>,
 }
 
 impl NdjsonReader {
     /// Create a new NDJSON reader with the given configuration.
     pub async fn new(config: NdjsonReaderConfig) -> Result<Self> {
-        let s3_client = S3Client::new(&config.region, config.endpoint.as_deref()).await?;
-
-        Ok(Self {
-            config,
-            s3_client: Some(s3_client),
-        })
+        Ok(Self { config })
     }
 
     /// Create an NDJSON reader for local files only (no S3 support).
     pub fn local_only() -> Self {
         Self {
             config: NdjsonReaderConfig::new("local"),
-            s3_client: None,
         }
     }
 
-    /// Read file data from the given URI.
-    async fn read_file_data(&self, uri: &str) -> Result<Bytes> {
+    /// Create an object store for the given URI.
+    fn create_object_store(&self, uri: &str) -> Result<(Arc<dyn ObjectStore>, ObjectPath)> {
         if uri.starts_with("s3://") {
-            let s3_client = self.s3_client.as_ref().ok_or_else(|| {
-                PfError::Reader(ReaderError::S3Error(
-                    "S3 client not configured for S3 URIs".to_string(),
-                ))
-            })?;
-
             let (bucket, key) = parse_s3_uri(uri)?;
-            s3_client.get_object(&bucket, &key).await
-        } else if uri.starts_with("file://") {
-            let path = uri.strip_prefix("file://").unwrap();
-            self.read_local_file(path)
-        } else {
-            // Assume local file path
-            self.read_local_file(uri)
-        }
-    }
 
-    /// Read a local file into memory.
-    fn read_local_file(&self, path: &str) -> Result<Bytes> {
-        debug!(path = path, "Reading local NDJSON file");
+            let mut builder = AmazonS3Builder::new()
+                .with_bucket_name(&bucket)
+                .with_region(&self.config.region);
 
-        let mut file = File::open(path).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                PfError::Reader(ReaderError::NotFound(path.to_string()))
-            } else {
-                PfError::Reader(ReaderError::Io(format!(
-                    "Failed to open file '{}': {}",
-                    path, e
-                )))
+            if let Some(endpoint) = &self.config.endpoint {
+                builder = builder
+                    .with_endpoint(endpoint)
+                    .with_allow_http(true)
+                    .with_virtual_hosted_style_request(false);
             }
-        })?;
 
-        let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer).map_err(|e| {
-            PfError::Reader(ReaderError::Io(format!(
-                "Failed to read file '{}': {}",
-                path, e
-            )))
-        })?;
-
-        Ok(Bytes::from(buffer))
-    }
-
-    /// Get the size of a file.
-    async fn get_file_size(&self, uri: &str) -> Result<u64> {
-        if uri.starts_with("s3://") {
-            let s3_client = self.s3_client.as_ref().ok_or_else(|| {
-                PfError::Reader(ReaderError::S3Error(
-                    "S3 client not configured for S3 URIs".to_string(),
-                ))
+            let store = builder.build().map_err(|e| {
+                PfError::Reader(ReaderError::S3Error(format!(
+                    "Failed to create S3 object store: {}",
+                    e
+                )))
             })?;
 
-            let (bucket, key) = parse_s3_uri(uri)?;
-            s3_client.get_object_size(&bucket, &key).await
+            let path = ObjectPath::from(key);
+            Ok((Arc::new(store), path))
         } else {
-            let path = if uri.starts_with("file://") {
+            let path_str = if uri.starts_with("file://") {
                 uri.strip_prefix("file://").unwrap()
             } else {
                 uri
             };
 
-            let metadata = std::fs::metadata(path).map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    PfError::Reader(ReaderError::NotFound(path.to_string()))
-                } else {
-                    PfError::Reader(ReaderError::Io(format!(
-                        "Failed to get metadata for '{}': {}",
-                        path, e
-                    )))
-                }
+            let store = LocalFileSystem::new();
+            let path = ObjectPath::from_absolute_path(path_str).map_err(|e| {
+                PfError::Reader(ReaderError::Io(format!("Invalid local path '{}': {}", uri, e)))
             })?;
 
-            Ok(metadata.len())
+            Ok((Arc::new(store), path))
         }
     }
 
-    /// Infer schema from NDJSON data.
-    fn infer_schema(&self, data: &[u8]) -> Result<SchemaRef> {
-        let cursor = std::io::Cursor::new(data);
-        let reader = BufReader::new(cursor);
+    /// Infer schema from the first N records of an NDJSON stream.
+    ///
+    /// This reads up to `schema_infer_max_records` lines to determine the schema,
+    /// returning both the schema and the lines read (so they can be processed).
+    async fn infer_schema_from_stream<R: AsyncBufRead + Unpin>(
+        &self,
+        reader: &mut R,
+    ) -> Result<(SchemaRef, Vec<String>)> {
+        let mut lines = Vec::with_capacity(self.config.schema_infer_max_records);
+        let mut line = String::new();
 
-        // Collect up to max_records lines for schema inference
-        let lines: Vec<String> = reader
-            .lines()
-            .take(self.config.schema_infer_max_records)
-            .filter_map(|l| l.ok())
-            .filter(|l| !l.trim().is_empty())
-            .collect();
+        // Read up to max_records lines for schema inference
+        while lines.len() < self.config.schema_infer_max_records {
+            line.clear();
+            let bytes_read = reader.read_line(&mut line).await.map_err(|e| {
+                PfError::Reader(ReaderError::Io(format!("Failed to read line: {}", e)))
+            })?;
+
+            if bytes_read == 0 {
+                break; // EOF
+            }
+
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                lines.push(trimmed.to_string());
+            }
+        }
 
         if lines.is_empty() {
             return Err(PfError::Reader(ReaderError::ParseError(
@@ -185,7 +202,7 @@ impl NdjsonReader {
             )));
         }
 
-        // Use arrow-json to infer schema
+        // Use arrow-json to infer schema from collected lines
         let infer_data = lines.join("\n");
         let cursor = std::io::Cursor::new(infer_data.as_bytes());
 
@@ -196,12 +213,17 @@ impl NdjsonReader {
             )))
         })?;
 
-        Ok(Arc::new(inferred))
+        Ok((Arc::new(inferred), lines))
     }
 
-    /// Count lines in NDJSON data.
-    fn count_lines(&self, data: &[u8]) -> usize {
-        data.iter().filter(|&&b| b == b'\n').count()
+    /// Count lines in a small file (for metadata).
+    /// Only used for local files where we can cheaply read the whole thing.
+    fn count_lines_sync(&self, path: &str) -> Result<usize> {
+        let file = std::fs::File::open(path).map_err(|e| {
+            PfError::Reader(ReaderError::Io(format!("Failed to open file: {}", e)))
+        })?;
+        let reader = std::io::BufReader::new(file);
+        Ok(reader.lines().count())
     }
 }
 
@@ -210,80 +232,315 @@ impl StreamingReader for NdjsonReader {
     async fn read_stream(&self, uri: &str) -> Result<BatchStream> {
         info!(uri = uri, "Opening NDJSON file for streaming");
 
-        // Download the file data
-        let data = self.read_file_data(uri).await?;
-        let file_size = data.len();
+        let (store, path) = self.create_object_store(uri)?;
+        let compression = Compression::from_uri(uri);
+
+        // Get object metadata
+        let meta = store.head(&path).await.map_err(|e| {
+            if e.to_string().contains("not found") || e.to_string().contains("404") {
+                PfError::Reader(ReaderError::NotFound(uri.to_string()))
+            } else {
+                PfError::Reader(ReaderError::S3Error(format!(
+                    "Failed to get metadata for '{}': {}",
+                    uri, e
+                )))
+            }
+        })?;
 
         debug!(
             uri = uri,
-            size = file_size,
-            "Downloaded NDJSON file, creating reader"
+            size = meta.size,
+            compression = ?compression,
+            "Got file metadata, creating streaming reader"
         );
 
-        // Infer schema from the data
-        let schema = self.infer_schema(&data)?;
+        // Get the byte stream from object store
+        let byte_stream = store.get(&path).await.map_err(|e| {
+            PfError::Reader(ReaderError::S3Error(format!(
+                "Failed to get object '{}': {}",
+                uri, e
+            )))
+        })?;
+
+        // Convert to tokio AsyncRead
+        let bytes_stream = byte_stream.into_stream().map(|result| {
+            result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+        });
+        let async_read = StreamReader::new(bytes_stream);
+
+        // Apply decompression if needed, then buffer
+        let buf_reader: Pin<Box<dyn AsyncBufRead + Send>> = match compression {
+            Compression::None => Box::pin(BufReader::with_capacity(8192, async_read)),
+            Compression::Gzip => {
+                let decoder = GzipDecoder::new(BufReader::with_capacity(8192, async_read));
+                Box::pin(BufReader::with_capacity(8192, decoder))
+            }
+            Compression::Zstd => {
+                let decoder = ZstdDecoder::new(BufReader::with_capacity(8192, async_read));
+                Box::pin(BufReader::with_capacity(8192, decoder))
+            }
+        };
+
+        // We need to infer schema first, which requires reading some data
+        // For true streaming, we buffer the schema inference lines and process them first
+        let mut buf_reader = buf_reader;
+        let (schema, initial_lines) = self.infer_schema_from_stream(&mut buf_reader).await?;
 
         debug!(
             uri = uri,
             fields = schema.fields().len(),
-            "Inferred schema"
+            initial_lines = initial_lines.len(),
+            "Inferred schema from stream"
         );
 
-        // Create JSON reader
-        let cursor = std::io::Cursor::new(data);
-        let reader = ReaderBuilder::new(schema.clone())
-            .with_batch_size(self.config.batch_size)
-            .build(BufReader::new(cursor))
-            .map_err(|e| {
-                PfError::Reader(ReaderError::ParseError(format!(
-                    "Failed to create JSON reader for '{}': {}",
-                    uri, e
-                )))
-            })?;
-
+        let batch_size = self.config.batch_size;
         let uri_clone = uri.to_string();
 
-        // Convert to batches
-        let batches: Vec<_> = reader
-            .enumerate()
-            .map(|(batch_index, result)| {
-                result
-                    .map(|record_batch| {
-                        trace!(
-                            batch_index = batch_index,
-                            rows = record_batch.num_rows(),
-                            "Read NDJSON batch"
-                        );
-                        Batch::new(record_batch, uri_clone.clone(), batch_index)
-                    })
-                    .map_err(|e| {
-                        PfError::Reader(ReaderError::ParseError(format!(
-                            "Failed to read batch {}: {}",
-                            batch_index, e
-                        )))
-                    })
-            })
-            .collect();
-
-        debug!(
-            uri = uri,
-            batch_count = batches.len(),
-            "Created batch stream"
+        // Create a streaming batch producer
+        let batch_stream = NdjsonBatchStream::new(
+            buf_reader,
+            schema,
+            batch_size,
+            uri_clone,
+            initial_lines,
         );
 
-        Ok(Box::pin(stream::iter(batches)))
+        Ok(Box::pin(batch_stream))
     }
 
     async fn file_metadata(&self, uri: &str) -> Result<FileMetadata> {
         debug!(uri = uri, "Getting NDJSON file metadata");
 
-        let size = self.get_file_size(uri).await?;
-        let data = self.read_file_data(uri).await?;
+        let (store, path) = self.create_object_store(uri)?;
 
-        let schema = self.infer_schema(&data)?;
-        let row_count = self.count_lines(&data);
+        // Get object metadata for file size
+        let meta = store.head(&path).await.map_err(|e| {
+            if e.to_string().contains("not found") || e.to_string().contains("404") {
+                PfError::Reader(ReaderError::NotFound(uri.to_string()))
+            } else {
+                PfError::Reader(ReaderError::S3Error(format!(
+                    "Failed to get metadata for '{}': {}",
+                    uri, e
+                )))
+            }
+        })?;
 
-        Ok(FileMetadata::new(size, schema).with_row_count(row_count as u64))
+        let size = meta.size as u64;
+
+        // For schema inference, we need to read some data
+        let byte_stream = store.get(&path).await.map_err(|e| {
+            PfError::Reader(ReaderError::S3Error(format!(
+                "Failed to get object '{}': {}",
+                uri, e
+            )))
+        })?;
+
+        let compression = Compression::from_uri(uri);
+        let bytes_stream = byte_stream.into_stream().map(|result| {
+            result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+        });
+        let async_read = StreamReader::new(bytes_stream);
+
+        let buf_reader: Pin<Box<dyn AsyncBufRead + Send>> = match compression {
+            Compression::None => Box::pin(BufReader::with_capacity(8192, async_read)),
+            Compression::Gzip => {
+                let decoder = GzipDecoder::new(BufReader::with_capacity(8192, async_read));
+                Box::pin(BufReader::with_capacity(8192, decoder))
+            }
+            Compression::Zstd => {
+                let decoder = ZstdDecoder::new(BufReader::with_capacity(8192, async_read));
+                Box::pin(BufReader::with_capacity(8192, decoder))
+            }
+        };
+
+        let mut buf_reader = buf_reader;
+        let (schema, _) = self.infer_schema_from_stream(&mut buf_reader).await?;
+
+        // For row count, we can only provide it for local uncompressed files
+        // For S3 or compressed files, we'd need to read the entire file
+        let row_count = if !uri.starts_with("s3://") && compression == Compression::None {
+            let path_str = if uri.starts_with("file://") {
+                uri.strip_prefix("file://").unwrap()
+            } else {
+                uri
+            };
+            Some(self.count_lines_sync(path_str)? as u64)
+        } else {
+            None
+        };
+
+        let mut metadata = FileMetadata::new(size, schema);
+        if let Some(count) = row_count {
+            metadata = metadata.with_row_count(count);
+        }
+
+        Ok(metadata)
+    }
+}
+
+/// Streaming batch producer for NDJSON files.
+///
+/// Reads lines from the async reader and produces Arrow RecordBatches
+/// with bounded memory usage.
+struct NdjsonBatchStream {
+    /// Receiver for batches from the background task
+    receiver: Option<tokio::sync::mpsc::Receiver<Result<Batch>>>,
+}
+
+impl NdjsonBatchStream {
+    fn new(
+        reader: Pin<Box<dyn AsyncBufRead + Send>>,
+        schema: SchemaRef,
+        batch_size: usize,
+        uri: String,
+        initial_lines: Vec<String>,
+    ) -> Self {
+        let (tx, rx) = tokio::sync::mpsc::channel(2);
+
+        // Spawn a task to read lines and produce batches
+        tokio::spawn(async move {
+            let result = Self::read_all_batches(
+                reader,
+                schema,
+                batch_size,
+                uri,
+                initial_lines,
+                tx,
+            )
+            .await;
+
+            if let Err(e) = result {
+                tracing::error!(error = %e, "Error in NDJSON batch stream");
+            }
+        });
+
+        Self {
+            receiver: Some(rx),
+        }
+    }
+
+    async fn read_all_batches(
+        mut reader: Pin<Box<dyn AsyncBufRead + Send>>,
+        schema: SchemaRef,
+        batch_size: usize,
+        uri: String,
+        initial_lines: Vec<String>,
+        tx: tokio::sync::mpsc::Sender<Result<Batch>>,
+    ) -> Result<()> {
+        let mut line_buffer: Vec<String> = initial_lines;
+        let mut batch_index = 0;
+        let mut line = String::new();
+
+        // Process initial lines if we already have enough for a batch
+        while line_buffer.len() >= batch_size {
+            let batch_lines: Vec<String> = line_buffer.drain(..batch_size).collect();
+            let batch = Self::lines_to_batch(&schema, &batch_lines, &uri, batch_index)?;
+            batch_index += 1;
+            if tx.send(Ok(batch)).await.is_err() {
+                return Ok(()); // Receiver dropped
+            }
+        }
+
+        // Read remaining lines from stream
+        loop {
+            line.clear();
+            let bytes_read = reader.read_line(&mut line).await.map_err(|e| {
+                PfError::Reader(ReaderError::Io(format!("Failed to read line: {}", e)))
+            })?;
+
+            if bytes_read == 0 {
+                // EOF - flush remaining lines
+                if !line_buffer.is_empty() {
+                    let batch = Self::lines_to_batch(&schema, &line_buffer, &uri, batch_index)?;
+                    let _ = tx.send(Ok(batch)).await;
+                }
+                break;
+            }
+
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                line_buffer.push(trimmed.to_string());
+
+                if line_buffer.len() >= batch_size {
+                    let batch_lines: Vec<String> = line_buffer.drain(..batch_size).collect();
+                    let batch = Self::lines_to_batch(&schema, &batch_lines, &uri, batch_index)?;
+                    batch_index += 1;
+                    if tx.send(Ok(batch)).await.is_err() {
+                        return Ok(()); // Receiver dropped
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Convert buffered lines to a RecordBatch.
+    fn lines_to_batch(
+        schema: &SchemaRef,
+        lines: &[String],
+        uri: &str,
+        batch_index: usize,
+    ) -> Result<Batch> {
+        if lines.is_empty() {
+            return Err(PfError::Reader(ReaderError::ParseError(
+                "No lines to convert to batch".to_string(),
+            )));
+        }
+
+        let json_data = lines.join("\n");
+        let cursor = std::io::Cursor::new(json_data.as_bytes());
+
+        let reader = ReaderBuilder::new(schema.clone())
+            .with_batch_size(lines.len())
+            .build(std::io::BufReader::new(cursor))
+            .map_err(|e| {
+                PfError::Reader(ReaderError::ParseError(format!(
+                    "Failed to create JSON reader: {}",
+                    e
+                )))
+            })?;
+
+        // Read the single batch
+        let batch = reader.into_iter().next();
+
+        match batch {
+            Some(Ok(record_batch)) => {
+                trace!(
+                    batch_index = batch_index,
+                    rows = record_batch.num_rows(),
+                    "Created NDJSON batch"
+                );
+
+                Ok(Batch::new(record_batch, uri.to_string(), batch_index))
+            }
+            Some(Err(e)) => Err(PfError::Reader(ReaderError::ParseError(format!(
+                "Failed to parse JSON batch: {}",
+                e
+            )))),
+            None => Err(PfError::Reader(ReaderError::ParseError(
+                "No batch produced from JSON data".to_string(),
+            ))),
+        }
+    }
+}
+
+impl Stream for NdjsonBatchStream {
+    type Item = Result<Batch>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if let Some(ref mut rx) = self.receiver {
+            match Pin::new(rx).poll_recv(cx) {
+                Poll::Ready(Some(batch)) => Poll::Ready(Some(batch)),
+                Poll::Ready(None) => {
+                    self.receiver = None;
+                    Poll::Ready(None)
+                }
+                Poll::Pending => Poll::Pending,
+            }
+        } else {
+            Poll::Ready(None)
+        }
     }
 }
 
@@ -303,7 +560,45 @@ mod tests {
             } else {
                 format!("\"name_{}\"", i)
             };
-            writeln!(file, r#"{{"id": {}, "name": {}, "value": {}}}"#, i, name, i * 10).unwrap();
+            writeln!(
+                file,
+                r#"{{"id": {}, "name": {}, "value": {}}}"#,
+                i,
+                name,
+                i * 10
+            )
+            .unwrap();
+        }
+
+        file
+    }
+
+    fn create_gzipped_ndjson_file(num_rows: usize) -> NamedTempFile {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+
+        let mut file = NamedTempFile::with_suffix(".ndjson.gz").unwrap();
+
+        {
+            let mut encoder = GzEncoder::new(&mut file, Compression::default());
+
+            for i in 0..num_rows {
+                let name = if i % 10 == 0 {
+                    "null".to_string()
+                } else {
+                    format!("\"name_{}\"", i)
+                };
+                writeln!(
+                    encoder,
+                    r#"{{"id": {}, "name": {}, "value": {}}}"#,
+                    i,
+                    name,
+                    i * 10
+                )
+                .unwrap();
+            }
+
+            encoder.finish().unwrap();
         }
 
         file
@@ -358,10 +653,7 @@ mod tests {
 
         // Create reader with small batch size
         let config = NdjsonReaderConfig::new("local").with_batch_size(100);
-        let reader = NdjsonReader {
-            config,
-            s3_client: None,
-        };
+        let reader = NdjsonReader { config };
 
         let mut stream = reader.read_stream(path).await.unwrap();
 
@@ -374,8 +666,8 @@ mod tests {
         }
 
         assert_eq!(total_rows, 1000);
-        // With batch size 100 and 1000 rows, we should get multiple batches
-        assert!(batch_count >= 10);
+        // With batch size 100 and 1000 rows, we should get 10 batches
+        assert_eq!(batch_count, 10);
     }
 
     #[tokio::test]
@@ -409,5 +701,88 @@ mod tests {
         assert!(schema.field_with_name("id").is_ok());
         assert!(schema.field_with_name("name").is_ok());
         assert!(schema.field_with_name("value").is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_compression_detection() {
+        assert_eq!(Compression::from_uri("file.ndjson"), Compression::None);
+        assert_eq!(Compression::from_uri("file.ndjson.gz"), Compression::Gzip);
+        assert_eq!(Compression::from_uri("file.ndjson.gzip"), Compression::Gzip);
+        assert_eq!(Compression::from_uri("file.ndjson.zst"), Compression::Zstd);
+        assert_eq!(Compression::from_uri("file.ndjson.zstd"), Compression::Zstd);
+        assert_eq!(
+            Compression::from_uri("s3://bucket/path/file.json.gz"),
+            Compression::Gzip
+        );
+    }
+
+    #[tokio::test]
+    async fn test_read_gzipped_ndjson() {
+        let file = create_gzipped_ndjson_file(100);
+        let path = file.path().to_str().unwrap();
+
+        let reader = NdjsonReader::local_only();
+        let mut stream = reader.read_stream(path).await.unwrap();
+
+        let mut total_rows = 0;
+        while let Some(batch_result) = stream.next().await {
+            let batch = batch_result.unwrap();
+            total_rows += batch.num_rows();
+        }
+
+        assert_eq!(total_rows, 100);
+    }
+
+    #[tokio::test]
+    async fn test_streaming_large_file() {
+        // Create a larger file to verify streaming works
+        let file = create_test_ndjson_file(10000);
+        let path = file.path().to_str().unwrap();
+
+        let config = NdjsonReaderConfig::new("local").with_batch_size(500);
+        let reader = NdjsonReader { config };
+
+        let mut stream = reader.read_stream(path).await.unwrap();
+
+        let mut total_rows = 0;
+        let mut batch_count = 0;
+        while let Some(batch_result) = stream.next().await {
+            let batch = batch_result.unwrap();
+            total_rows += batch.num_rows();
+            batch_count += 1;
+
+            // Verify batches are roughly the expected size
+            if batch_count < 20 {
+                // Not the last batch
+                assert!(batch.num_rows() <= 500);
+            }
+        }
+
+        assert_eq!(total_rows, 10000);
+        assert_eq!(batch_count, 20); // 10000 / 500 = 20 batches
+    }
+
+    #[tokio::test]
+    async fn test_empty_lines_skipped() {
+        let mut file = NamedTempFile::new().unwrap();
+
+        // Write some records with empty lines interspersed
+        writeln!(file, r#"{{"id": 1, "name": "one"}}"#).unwrap();
+        writeln!(file, "").unwrap(); // empty line
+        writeln!(file, r#"{{"id": 2, "name": "two"}}"#).unwrap();
+        writeln!(file, "   ").unwrap(); // whitespace-only line
+        writeln!(file, r#"{{"id": 3, "name": "three"}}"#).unwrap();
+
+        let path = file.path().to_str().unwrap();
+        let reader = NdjsonReader::local_only();
+        let mut stream = reader.read_stream(path).await.unwrap();
+
+        let mut total_rows = 0;
+        while let Some(batch_result) = stream.next().await {
+            let batch = batch_result.unwrap();
+            total_rows += batch.num_rows();
+        }
+
+        assert_eq!(total_rows, 3);
     }
 }
