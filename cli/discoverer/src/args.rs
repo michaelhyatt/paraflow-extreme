@@ -60,7 +60,7 @@ pub struct Cli {
 
     // === Discovery Options ===
     /// Glob pattern to filter files (e.g., "*.parquet")
-    #[arg(long, default_value = "*")]
+    #[arg(short = 'P', long, default_value = "*")]
     pub pattern: String,
 
     /// Maximum number of files to output (0 = unlimited)
@@ -145,7 +145,7 @@ pub struct Cli {
 
     // === Logging Options ===
     /// Log level
-    #[arg(long, value_enum, default_value = "info")]
+    #[arg(short = 'l', long, value_enum, default_value = "info")]
     pub log_level: LogLevel,
 }
 

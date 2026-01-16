@@ -11,20 +11,20 @@ pub use pf_cli_common::LogLevel;
 /// ## Examples
 ///
 /// Pipe from discoverer to worker (local testing):
-///   pf-discoverer -b my-bucket --pattern "*.parquet" | pf-worker --destination stdout
+///   pf-discoverer -b my-bucket -P "*.parquet" | pf-worker -d stdout
 ///
 /// Performance testing with stats destination:
-///   pf-discoverer -b my-bucket | pf-worker --destination stats --threads 8
+///   pf-discoverer -b my-bucket | pf-worker -d stats -t 8
 ///
 /// Production with SQS:
-///   pf-worker --input sqs --sqs-queue-url https://sqs.us-east-1.amazonaws.com/123/queue
+///   pf-worker -i sqs --sqs-queue-url https://sqs.us-east-1.amazonaws.com/123/queue
 #[derive(Parser, Debug)]
 #[command(name = "pf-worker")]
 #[command(version, about, long_about = None)]
 pub struct Cli {
     // === Input Source ===
     /// Input source type
-    #[arg(long, value_enum, default_value = "stdin")]
+    #[arg(short = 'i', long, value_enum, default_value = "stdin")]
     pub input: InputType,
 
     /// SQS queue URL (required when input=sqs)
@@ -49,7 +49,7 @@ pub struct Cli {
 
     // === Destination ===
     /// Output destination type
-    #[arg(long, value_enum, default_value = "stdout")]
+    #[arg(short = 'd', long, value_enum, default_value = "stdout")]
     pub destination: DestinationType,
 
     /// Output format for stdout destination
@@ -58,7 +58,7 @@ pub struct Cli {
 
     // === Processing ===
     /// Number of processing threads (must be >= 1)
-    #[arg(long, default_value_t = num_cpus(), value_parser = parse_positive_usize)]
+    #[arg(short = 't', long, default_value_t = num_cpus(), value_parser = parse_positive_usize)]
     pub threads: usize,
 
     /// Batch size for reading files (must be >= 1)
@@ -93,7 +93,7 @@ pub struct Cli {
 
     // === Logging ===
     /// Log level
-    #[arg(long, value_enum, default_value = "info")]
+    #[arg(short = 'l', long, value_enum, default_value = "info")]
     pub log_level: LogLevel,
 }
 
