@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "NDJSON file reader with S3 streaming support for paraflow-extreme"
+description = "Streaming NDJSON file reader with S3 and compression support for paraflow-extreme"
 
 [dependencies]
 # Internal
@@ -18,12 +18,15 @@ arrow-json = { workspace = true }
 
 # Async
 tokio = { workspace = true, features = ["fs", "io-util"] }
+tokio-util = { version = "0.7", features = ["io"] }
 async-trait = { workspace = true }
 futures = { workspace = true }
 
-# AWS
-aws-sdk-s3 = { workspace = true }
-aws-config = { workspace = true }
+# Object store for S3 streaming
+object_store = { workspace = true }
+
+# Compression
+async-compression = { workspace = true }
 
 # Other
 tracing = { workspace = true }
@@ -34,3 +37,4 @@ serde_json = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 tempfile = "3.10"
+flate2 = "1.0"
