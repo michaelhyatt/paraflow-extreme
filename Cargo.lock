@@ -2194,6 +2194,7 @@ dependencies = [
  "anyhow",
  "aws-sdk-s3",
  "clap",
+ "futures",
  "pf-discoverer",
  "pf-error",
  "pf-types",

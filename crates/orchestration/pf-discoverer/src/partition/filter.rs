@@ -2,6 +2,7 @@
 //!
 //! Provides filtering of partition values during prefix generation.
 
+use chrono::NaiveDate;
 use pf_error::{PfError, Result};
 use std::collections::{HashMap, HashSet};
 
@@ -141,9 +142,127 @@ impl PartitionFilter {
     }
 }
 
+/// Iterator over dates in a range.
+struct DateRangeIterator {
+    current: NaiveDate,
+    end: NaiveDate,
+}
+
+impl Iterator for DateRangeIterator {
+    type Item = NaiveDate;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current <= self.end {
+            let date = self.current;
+            self.current = self.current.succ_opt().unwrap_or(self.current);
+            Some(date)
+        } else {
+            None
+        }
+    }
+}
+
+/// A date range filter for time-based partitioning.
+///
+/// Filters S3 prefixes to only include paths matching dates in the specified range.
+/// Used with partitioning expressions containing `${_time:FORMAT}` specifiers.
+///
+/// # Example
+///
+/// ```
+/// use pf_discoverer::partition::TimeRangeFilter;
+///
+/// let filter = TimeRangeFilter::parse("2022-01-01..2022-01-05").unwrap();
+/// assert_eq!(filter.dates().count(), 5);
+/// ```
+#[derive(Debug, Clone)]
+pub struct TimeRangeFilter {
+    /// Start date (inclusive)
+    start: NaiveDate,
+    /// End date (inclusive)
+    end: NaiveDate,
+}
+
+impl TimeRangeFilter {
+    /// Parse a date range filter from string format.
+    ///
+    /// Expected format: `YYYY-MM-DD..YYYY-MM-DD`
+    ///
+    /// # Arguments
+    ///
+    /// * `input` - The date range string to parse
+    ///
+    /// # Returns
+    ///
+    /// A parsed `TimeRangeFilter` or an error if the format is invalid.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The format is not `YYYY-MM-DD..YYYY-MM-DD`
+    /// - The dates are invalid
+    /// - The end date is before the start date
+    pub fn parse(input: &str) -> Result<Self> {
+        let input = input.trim();
+
+        let parts: Vec<&str> = input.splitn(2, "..").collect();
+        if parts.len() != 2 {
+            return Err(PfError::Config(format!(
+                "Invalid date range format: '{}'. Expected 'YYYY-MM-DD..YYYY-MM-DD'",
+                input
+            )));
+        }
+
+        let start_str = parts[0].trim();
+        let end_str = parts[1].trim();
+
+        let start = NaiveDate::parse_from_str(start_str, "%Y-%m-%d").map_err(|_| {
+            PfError::Config(format!(
+                "Invalid start date '{}'. Expected format: YYYY-MM-DD",
+                start_str
+            ))
+        })?;
+
+        let end = NaiveDate::parse_from_str(end_str, "%Y-%m-%d").map_err(|_| {
+            PfError::Config(format!(
+                "Invalid end date '{}'. Expected format: YYYY-MM-DD",
+                end_str
+            ))
+        })?;
+
+        if end < start {
+            return Err(PfError::Config(format!(
+                "End date {} is before start date {}",
+                end, start
+            )));
+        }
+
+        Ok(Self { start, end })
+    }
+
+    /// Get the start date.
+    pub fn start(&self) -> NaiveDate {
+        self.start
+    }
+
+    /// Get the end date.
+    pub fn end(&self) -> NaiveDate {
+        self.end
+    }
+
+    /// Iterate over all dates in the range (inclusive).
+    pub fn dates(&self) -> impl Iterator<Item = NaiveDate> {
+        DateRangeIterator {
+            current: self.start,
+            end: self.end,
+        }
+    }
+}
+
 /// Collection of partition filters.
 ///
 /// Holds filters for multiple partition variables with AND logic between fields.
+/// Also supports time-based filtering with the special `_time` field.
 ///
 /// # Example
 ///
@@ -162,6 +281,8 @@ impl PartitionFilter {
 pub struct PartitionFilters {
     /// Map from field name to filter.
     filters: HashMap<String, PartitionFilter>,
+    /// Time-based range filter for the special `_time` field.
+    time_filter: Option<TimeRangeFilter>,
 }
 
 impl PartitionFilters {
@@ -193,6 +314,39 @@ impl PartitionFilters {
         } else {
             self.filters.insert(field, filter);
         }
+    }
+
+    /// Parse and add a filter, detecting time range vs value list.
+    ///
+    /// This method handles both standard partition filters (`field=value1,value2`)
+    /// and time range filters (`_time=YYYY-MM-DD..YYYY-MM-DD`).
+    ///
+    /// # Arguments
+    ///
+    /// * `input` - The filter string to parse
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the filter was added successfully, or an error if parsing failed.
+    pub fn parse_and_add(&mut self, input: &str) -> Result<()> {
+        let input = input.trim();
+
+        // Check for time range filter
+        if input.starts_with("_time=") && input.contains("..") {
+            let range_str = input
+                .strip_prefix("_time=")
+                .expect("checked prefix above");
+            self.time_filter = Some(TimeRangeFilter::parse(range_str)?);
+        } else {
+            let filter = PartitionFilter::parse(input)?;
+            self.add_parsed_filter(filter);
+        }
+        Ok(())
+    }
+
+    /// Get the time range filter if set.
+    pub fn time_filter(&self) -> Option<&TimeRangeFilter> {
+        self.time_filter.as_ref()
     }
 
     /// Check if a filter exists for a field.
@@ -375,5 +529,92 @@ mod tests {
 
         assert!(filters.has_filter("index"));
         assert_eq!(filters.get_values("index").unwrap().len(), 2);
+    }
+
+    // TimeRangeFilter tests
+
+    #[test]
+    fn test_time_range_filter_parse() {
+        let filter = TimeRangeFilter::parse("2022-01-01..2022-01-05").unwrap();
+        assert_eq!(filter.start(), NaiveDate::from_ymd_opt(2022, 1, 1).unwrap());
+        assert_eq!(filter.end(), NaiveDate::from_ymd_opt(2022, 1, 5).unwrap());
+    }
+
+    #[test]
+    fn test_time_range_filter_parse_with_spaces() {
+        let filter = TimeRangeFilter::parse("  2022-01-01  ..  2022-01-05  ").unwrap();
+        assert_eq!(filter.start(), NaiveDate::from_ymd_opt(2022, 1, 1).unwrap());
+        assert_eq!(filter.end(), NaiveDate::from_ymd_opt(2022, 1, 5).unwrap());
+    }
+
+    #[test]
+    fn test_time_range_filter_parse_same_date() {
+        let filter = TimeRangeFilter::parse("2022-01-01..2022-01-01").unwrap();
+        assert_eq!(filter.start(), filter.end());
+    }
+
+    #[test]
+    fn test_time_range_filter_parse_invalid_format() {
+        assert!(TimeRangeFilter::parse("2022-01-01").is_err());
+        assert!(TimeRangeFilter::parse("foo..bar").is_err());
+        assert!(TimeRangeFilter::parse("2022/01/01..2022/01/05").is_err());
+    }
+
+    #[test]
+    fn test_time_range_filter_parse_end_before_start() {
+        assert!(TimeRangeFilter::parse("2022-01-05..2022-01-01").is_err());
+    }
+
+    #[test]
+    fn test_time_range_filter_dates_iterator() {
+        let filter = TimeRangeFilter::parse("2022-01-01..2022-01-05").unwrap();
+        let dates: Vec<NaiveDate> = filter.dates().collect();
+
+        assert_eq!(dates.len(), 5);
+        assert_eq!(dates[0], NaiveDate::from_ymd_opt(2022, 1, 1).unwrap());
+        assert_eq!(dates[1], NaiveDate::from_ymd_opt(2022, 1, 2).unwrap());
+        assert_eq!(dates[2], NaiveDate::from_ymd_opt(2022, 1, 3).unwrap());
+        assert_eq!(dates[3], NaiveDate::from_ymd_opt(2022, 1, 4).unwrap());
+        assert_eq!(dates[4], NaiveDate::from_ymd_opt(2022, 1, 5).unwrap());
+    }
+
+    #[test]
+    fn test_time_range_filter_dates_single_day() {
+        let filter = TimeRangeFilter::parse("2022-01-01..2022-01-01").unwrap();
+        let dates: Vec<NaiveDate> = filter.dates().collect();
+
+        assert_eq!(dates.len(), 1);
+        assert_eq!(dates[0], NaiveDate::from_ymd_opt(2022, 1, 1).unwrap());
+    }
+
+    // PartitionFilters.parse_and_add tests
+
+    #[test]
+    fn test_partition_filters_parse_and_add_value_filter() {
+        let mut filters = PartitionFilters::new();
+        filters.parse_and_add("index=nginx,apache").unwrap();
+
+        assert!(filters.has_filter("index"));
+        assert!(filters.time_filter().is_none());
+    }
+
+    #[test]
+    fn test_partition_filters_parse_and_add_time_filter() {
+        let mut filters = PartitionFilters::new();
+        filters.parse_and_add("_time=2022-01-01..2022-01-05").unwrap();
+
+        assert!(!filters.has_filter("_time")); // _time is not a regular filter
+        assert!(filters.time_filter().is_some());
+        assert_eq!(filters.time_filter().unwrap().dates().count(), 5);
+    }
+
+    #[test]
+    fn test_partition_filters_parse_and_add_both() {
+        let mut filters = PartitionFilters::new();
+        filters.parse_and_add("_time=2022-01-01..2022-01-05").unwrap();
+        filters.parse_and_add("element=cpu,memory").unwrap();
+
+        assert!(filters.has_filter("element"));
+        assert!(filters.time_filter().is_some());
     }
 }
