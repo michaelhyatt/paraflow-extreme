@@ -1,0 +1,18 @@
+[package]
+name = "pf-cli-common"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Shared utilities for paraflow-extreme CLI binaries"
+
+[dependencies]
+# CLI
+clap = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }

@@ -2435,6 +2435,16 @@ name = "pf-cli"
 version = "0.1.0"
 
 [[package]]
+name = "pf-cli-common"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "pf-discoverer"
 version = "0.1.0"
 dependencies = [
@@ -2463,6 +2473,7 @@ dependencies = [
  "aws-sdk-s3",
  "clap",
  "futures",
+ "pf-cli-common",
  "pf-discoverer",
  "pf-error",
  "pf-types",
@@ -2614,6 +2625,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "pf-cli-common",
  "pf-traits",
  "pf-worker",
  "tokio",

@@ -9,24 +9,12 @@ use pf_discoverer::{
 };
 use pf_discoverer::filter::parse_date;
 use pf_discoverer::partition::{PartitionFilters, PartitioningExpression, expand_all_prefixes};
-use tracing::{Level, debug, info, warn};
-use tracing_subscriber::fmt;
+use tracing::{debug, info, warn};
 
-use crate::args::{Cli, DestinationType, LogLevel};
+use crate::args::{Cli, DestinationType};
 use crate::progress::ProgressReporter;
 
-/// Initialize logging.
-pub fn init_logging(level: LogLevel) -> Result<()> {
-    let level: Level = level.into();
-
-    let subscriber = fmt::Subscriber::builder()
-        .with_max_level(level)
-        .with_writer(std::io::stderr); // Log to stderr so stdout is clean for output
-
-    subscriber.init();
-
-    Ok(())
-}
+pub use pf_cli_common::init_logging;
 
 /// Execute the discoverer with the provided arguments.
 pub async fn execute(args: Cli) -> Result<DiscoveryStats> {

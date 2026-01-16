@@ -20,6 +20,7 @@ tokio = { workspace = true }
 # Internal
 pf-traits = { workspace = true }
 pf-worker = { path = "../../crates/orchestration/pf-worker" }
+pf-cli-common = { path = "../common" }
 
 # Logging
 tracing = { workspace = true }

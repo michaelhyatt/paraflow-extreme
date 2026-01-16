@@ -8,24 +8,11 @@ use pf_worker::{
 };
 use pf_traits::BatchIndexer;
 use std::sync::Arc;
-use tracing::Level;
-use tracing_subscriber::fmt;
 
-use crate::args::{Cli, DestinationType, InputType, LogLevel};
+use crate::args::{Cli, DestinationType, InputType};
 use crate::progress::ProgressReporter;
 
-/// Initialize logging.
-pub fn init_logging(level: LogLevel) -> Result<()> {
-    let level: Level = level.into();
-
-    let subscriber = fmt::Subscriber::builder()
-        .with_max_level(level)
-        .with_writer(std::io::stderr); // Log to stderr so stdout is clean for output
-
-    subscriber.init();
-
-    Ok(())
-}
+pub use pf_cli_common::init_logging;
 
 /// Execute the worker with the provided arguments.
 pub async fn execute(args: Cli) -> Result<pf_worker::stats::StatsSnapshot> {

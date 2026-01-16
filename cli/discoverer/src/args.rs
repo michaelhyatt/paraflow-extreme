@@ -1,6 +1,7 @@
 //! CLI argument definitions for pf-discoverer.
 
 use clap::{Parser, ValueEnum};
+pub use pf_cli_common::LogLevel;
 
 /// S3 file discovery for paraflow-extreme.
 ///
@@ -175,32 +176,6 @@ impl From<OutputFormatArg> for pf_discoverer::OutputFormat {
     }
 }
 
-/// Log level argument.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum LogLevel {
-    /// Trace level (most verbose)
-    Trace,
-    /// Debug level
-    Debug,
-    /// Info level (default)
-    Info,
-    /// Warning level
-    Warn,
-    /// Error level (least verbose)
-    Error,
-}
-
-impl From<LogLevel> for tracing::Level {
-    fn from(level: LogLevel) -> Self {
-        match level {
-            LogLevel::Trace => tracing::Level::TRACE,
-            LogLevel::Debug => tracing::Level::DEBUG,
-            LogLevel::Info => tracing::Level::INFO,
-            LogLevel::Warn => tracing::Level::WARN,
-            LogLevel::Error => tracing::Level::ERROR,
-        }
-    }
-}
 
 /// Parse a positive usize (>= 1).
 fn parse_positive_usize(s: &str) -> Result<usize, String> {

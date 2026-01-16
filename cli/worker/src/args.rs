@@ -1,6 +1,7 @@
 //! CLI argument definitions for pf-worker.
 
 use clap::{Parser, ValueEnum};
+pub use pf_cli_common::LogLevel;
 
 /// High-throughput data processing worker for paraflow-extreme.
 ///
@@ -132,32 +133,6 @@ impl From<OutputFormat> for pf_worker::destination::OutputFormat {
     }
 }
 
-/// Log level argument.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum LogLevel {
-    /// Trace level (most verbose)
-    Trace,
-    /// Debug level
-    Debug,
-    /// Info level (default)
-    Info,
-    /// Warning level
-    Warn,
-    /// Error level (least verbose)
-    Error,
-}
-
-impl From<LogLevel> for tracing::Level {
-    fn from(level: LogLevel) -> Self {
-        match level {
-            LogLevel::Trace => tracing::Level::TRACE,
-            LogLevel::Debug => tracing::Level::DEBUG,
-            LogLevel::Info => tracing::Level::INFO,
-            LogLevel::Warn => tracing::Level::WARN,
-            LogLevel::Error => tracing::Level::ERROR,
-        }
-    }
-}
 
 /// Get the number of available CPUs.
 fn num_cpus() -> usize {
