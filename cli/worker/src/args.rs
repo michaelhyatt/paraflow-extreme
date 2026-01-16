@@ -3,6 +3,21 @@
 use clap::{Parser, ValueEnum};
 pub use pf_cli_common::LogLevel;
 
+mod built_info {
+    include!(concat!(env!("OUT_DIR"), "/built.rs"));
+}
+
+/// Get the version string with build metadata.
+fn version_string() -> &'static str {
+    // Use Box::leak to create a 'static string at runtime
+    // This is acceptable as it's only called once for --version
+    let version = env!("CARGO_PKG_VERSION");
+    let commit = built_info::GIT_COMMIT_HASH_SHORT.unwrap_or("unknown");
+    let date = built_info::BUILT_TIME_UTC;
+    let s = format!("{version} ({commit} {date})");
+    Box::leak(s.into_boxed_str())
+}
+
 /// High-throughput data processing worker for paraflow-extreme.
 ///
 /// Receives file locations from input sources (SQS or stdin), processes files
@@ -20,7 +35,7 @@ pub use pf_cli_common::LogLevel;
 ///   pf-worker -i sqs --sqs-queue-url https://sqs.us-east-1.amazonaws.com/123/queue
 #[derive(Parser, Debug)]
 #[command(name = "pf-worker")]
-#[command(version, about, long_about = None)]
+#[command(version = version_string(), about, long_about = None)]
 pub struct Cli {
     // === Input Source ===
     /// Input source type

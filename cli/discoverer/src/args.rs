@@ -3,6 +3,21 @@
 use clap::{Parser, ValueEnum};
 pub use pf_cli_common::LogLevel;
 
+mod built_info {
+    include!(concat!(env!("OUT_DIR"), "/built.rs"));
+}
+
+/// Get the version string with build metadata.
+fn version_string() -> &'static str {
+    // Use Box::leak to create a 'static string at runtime
+    // This is acceptable as it's only called once for --version
+    let version = env!("CARGO_PKG_VERSION");
+    let commit = built_info::GIT_COMMIT_HASH_SHORT.unwrap_or("unknown");
+    let date = built_info::BUILT_TIME_UTC;
+    let s = format!("{version} ({commit} {date})");
+    Box::leak(s.into_boxed_str())
+}
+
 /// S3 file discovery for paraflow-extreme.
 ///
 /// Discovers files from S3 storage and outputs file information for processing.
@@ -27,7 +42,7 @@ pub use pf_cli_common::LogLevel;
 ///   pf-discoverer -b my-bucket --min-size 1024 --modified-after 2024-01-01
 #[derive(Parser, Debug)]
 #[command(name = "pf-discoverer")]
-#[command(version, about, long_about = None)]
+#[command(version = version_string(), about, long_about = None)]
 pub struct Cli {
     // === S3 Configuration ===
     /// S3 bucket name
