@@ -31,6 +31,12 @@ pub struct S3Config {
 
     /// Request timeout in seconds
     pub timeout_secs: u64,
+
+    /// Maximum concurrent ListObjectsV2 operations
+    pub concurrency: usize,
+
+    /// Maximum parallel prefix discoveries
+    pub parallel_prefixes: usize,
 }
 
 impl Default for S3Config {
@@ -44,6 +50,8 @@ impl Default for S3Config {
             secret_key: None,
             profile: None,
             timeout_secs: 30,
+            concurrency: 10,
+            parallel_prefixes: 20,
         }
     }
 }
@@ -95,6 +103,18 @@ impl S3Config {
     /// Set the request timeout in seconds.
     pub fn with_timeout(mut self, timeout_secs: u64) -> Self {
         self.timeout_secs = timeout_secs;
+        self
+    }
+
+    /// Set the maximum concurrent ListObjectsV2 operations.
+    pub fn with_concurrency(mut self, concurrency: usize) -> Self {
+        self.concurrency = concurrency;
+        self
+    }
+
+    /// Set the maximum parallel prefix discoveries.
+    pub fn with_parallel_prefixes(mut self, parallel_prefixes: usize) -> Self {
+        self.parallel_prefixes = parallel_prefixes;
         self
     }
 }

@@ -3,7 +3,7 @@
 //! This module provides the [`Output`] trait and implementations for
 //! outputting discovered files to various destinations:
 //! - [`StdoutOutput`] - Outputs to stdout in JSON or JSONL format
-//! - [`SqsOutput`] - Sends to an SQS queue
+//! - [`SqsOutput`] - Sends to an SQS queue (with optional batching)
 
 mod sqs;
 mod stdout;
