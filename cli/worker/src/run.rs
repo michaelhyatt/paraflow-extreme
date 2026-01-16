@@ -12,6 +12,7 @@ use tracing::Level;
 use tracing_subscriber::fmt;
 
 use crate::args::{Cli, DestinationType, InputType, LogLevel};
+use crate::progress::ProgressReporter;
 
 /// Initialize logging.
 pub fn init_logging(level: LogLevel) -> Result<()> {
@@ -66,7 +67,17 @@ pub async fn execute(args: Cli) -> Result<pf_worker::stats::StatsSnapshot> {
         InputType::Stdin => {
             let source = StdinSource::new();
             let worker = Worker::new(config, source, reader, destination);
-            worker.run().await?
+
+            // Start progress reporter if enabled
+            let mut progress = ProgressReporter::new(args.progress, args.progress_interval);
+            progress.start(Arc::clone(worker.stats()));
+
+            let result = worker.run().await;
+
+            // Stop progress reporter
+            progress.stop(worker.stats()).await;
+
+            result?
         }
         InputType::Sqs => {
             let queue_url = args
@@ -86,7 +97,17 @@ pub async fn execute(args: Cli) -> Result<pf_worker::stats::StatsSnapshot> {
             };
 
             let worker = Worker::new(config, source, reader, destination);
-            worker.run().await?
+
+            // Start progress reporter if enabled
+            let mut progress = ProgressReporter::new(args.progress, args.progress_interval);
+            progress.start(Arc::clone(worker.stats()));
+
+            let result = worker.run().await;
+
+            // Stop progress reporter
+            progress.stop(worker.stats()).await;
+
+            result?
         }
     };
 

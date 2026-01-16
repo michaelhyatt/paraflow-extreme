@@ -81,6 +81,15 @@ pub struct Cli {
     #[arg(long, env = "PF_S3_ENDPOINT")]
     pub s3_endpoint: Option<String>,
 
+    // === Progress Options ===
+    /// Enable progress reporting to stderr
+    #[arg(long)]
+    pub progress: bool,
+
+    /// Progress reporting interval in seconds
+    #[arg(long, default_value = "5", value_parser = clap::value_parser!(u64).range(1..))]
+    pub progress_interval: u64,
+
     // === Logging ===
     /// Log level
     #[arg(long, value_enum, default_value = "info")]

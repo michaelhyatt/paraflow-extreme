@@ -13,6 +13,7 @@ use tracing::{Level, debug, info, warn};
 use tracing_subscriber::fmt;
 
 use crate::args::{Cli, DestinationType, LogLevel};
+use crate::progress::ProgressReporter;
 
 /// Initialize logging.
 pub fn init_logging(level: LogLevel) -> Result<()> {
@@ -198,6 +199,10 @@ async fn run_discovery_with_prefixes<O: Output, F: Filter>(
     let mut stats = DiscoveryStats::new();
     let max_files = config.max_files;
 
+    // Start progress reporter if enabled
+    let mut progress = ProgressReporter::new(args.progress, args.progress_interval);
+    progress.start();
+
     debug!(
         bucket = %args.bucket,
         prefix_count = prefixes.len(),
@@ -230,9 +235,11 @@ async fn run_discovery_with_prefixes<O: Output, F: Filter>(
                     }
 
                     stats.record_output(obj.size);
+                    progress.record_output(obj.size);
                     debug!(key = %obj.key, size = obj.size, "Discovered file");
                 } else {
                     stats.record_filtered();
+                    progress.record_filtered();
                 }
             }
             Err(e) => {
@@ -241,6 +248,9 @@ async fn run_discovery_with_prefixes<O: Output, F: Filter>(
             }
         }
     }
+
+    // Stop progress reporter
+    progress.stop().await;
 
     // Flush any buffered output
     output.flush().await?;
