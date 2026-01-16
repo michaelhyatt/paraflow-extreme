@@ -43,7 +43,6 @@
 //! ```
 
 use chrono::{DateTime, Utc};
-use pf_types::FileFormat;
 use serde::{Deserialize, Serialize};
 
 pub mod config;
@@ -78,9 +77,6 @@ pub struct DiscoveredFile {
 
     /// Size of the file in bytes
     pub size_bytes: u64,
-
-    /// File format
-    pub format: FileFormat,
 
     /// Last modified timestamp (if available)
     #[serde(skip_serializing_if = "Option::is_none")]

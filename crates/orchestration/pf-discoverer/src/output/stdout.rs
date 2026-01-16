@@ -78,13 +78,11 @@ impl Output for StdoutOutput {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use pf_types::FileFormat;
 
     fn create_test_file() -> DiscoveredFile {
         DiscoveredFile {
             uri: "s3://bucket/file.parquet".to_string(),
             size_bytes: 1024,
-            format: FileFormat::Parquet,
             last_modified: Some(Utc::now()),
         }
     }

@@ -53,7 +53,6 @@ pub async fn execute(args: Cli) -> Result<DiscoveryStats> {
 
     // Build discovery configuration
     let config = DiscoveryConfig::new()
-        .with_format(args.format.into())
         .with_max_files(args.max_files);
 
     // Build composite filter

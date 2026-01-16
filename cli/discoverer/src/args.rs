@@ -56,10 +56,6 @@ pub struct Cli {
     #[arg(long, default_value = "*")]
     pub pattern: String,
 
-    /// File format of discovered files
-    #[arg(long, value_enum, default_value = "parquet")]
-    pub format: FileFormatArg,
-
     /// Maximum number of files to output (0 = unlimited)
     #[arg(long, default_value = "0")]
     pub max_files: usize,
@@ -125,24 +121,6 @@ pub struct Cli {
     /// Log level
     #[arg(long, value_enum, default_value = "info")]
     pub log_level: LogLevel,
-}
-
-/// File format argument.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum FileFormatArg {
-    /// Apache Parquet
-    Parquet,
-    /// Newline-delimited JSON
-    Ndjson,
-}
-
-impl From<FileFormatArg> for pf_types::FileFormat {
-    fn from(arg: FileFormatArg) -> Self {
-        match arg {
-            FileFormatArg::Parquet => pf_types::FileFormat::Parquet,
-            FileFormatArg::Ndjson => pf_types::FileFormat::NdJson,
-        }
-    }
 }
 
 /// Output destination type.

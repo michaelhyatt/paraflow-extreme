@@ -135,7 +135,6 @@ impl<O: Output, F: Filter> Discoverer<O, F> {
         DiscoveredFile {
             uri: format!("s3://{}/{}", self.bucket, obj.key),
             size_bytes: obj.size,
-            format: self.config.file_format,
             last_modified: obj.last_modified,
         }
     }
@@ -146,7 +145,6 @@ mod tests {
     use super::*;
     use crate::filter::PatternFilter;
     use crate::output::StdoutOutput;
-    use pf_types::FileFormat;
 
     fn create_test_config() -> DiscoveryConfig {
         DiscoveryConfig::new()
@@ -160,18 +158,14 @@ mod tests {
             last_modified: None,
         };
 
-        let config = create_test_config();
-
         let file = DiscoveredFile {
             uri: format!("s3://test-bucket/{}", obj.key),
             size_bytes: obj.size,
-            format: config.file_format,
             last_modified: obj.last_modified,
         };
 
         assert_eq!(file.uri, "s3://test-bucket/data/file.parquet");
         assert_eq!(file.size_bytes, 1024);
-        assert_eq!(file.format, FileFormat::Parquet);
     }
 
     #[tokio::test]
