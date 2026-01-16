@@ -3,7 +3,7 @@
 use crate::config::WorkerConfig;
 use crate::pipeline::{Pipeline, ProcessingResult};
 use crate::router::WorkRouter;
-use crate::source::{WorkAck, WorkMessage, WorkNack, WorkSource};
+use crate::source::{QueueMessage, WorkQueue};
 use crate::stats::{StatsSnapshot, WorkerStats};
 use pf_error::{ErrorCategory, Result};
 use pf_traits::{BatchIndexer, FailureContext, StreamingReader};
@@ -17,7 +17,7 @@ use tracing::{debug, error, info, warn};
 ///
 /// The worker receives file locations from a work source, processes files
 /// through a configurable pipeline, and writes to a destination backend.
-pub struct Worker<S: WorkSource, R: StreamingReader + 'static> {
+pub struct Worker<S: WorkQueue, R: StreamingReader + 'static> {
     /// Worker configuration
     config: WorkerConfig,
 
@@ -34,7 +34,7 @@ pub struct Worker<S: WorkSource, R: StreamingReader + 'static> {
     stats: Arc<WorkerStats>,
 }
 
-impl<S: WorkSource + 'static, R: StreamingReader + 'static> Worker<S, R> {
+impl<S: WorkQueue + 'static, R: StreamingReader + 'static> Worker<S, R> {
     /// Create a new worker.
     pub fn new(
         config: WorkerConfig,
@@ -145,7 +145,7 @@ impl<S: WorkSource + 'static, R: StreamingReader + 'static> Worker<S, R> {
             }
 
             // Receive a batch of work items
-            let messages = match self.source.receive(self.config.channel_buffer).await {
+            let messages = match self.source.receive_batch(self.config.channel_buffer).await {
                 Ok(Some(msgs)) => msgs,
                 Ok(None) => {
                     debug!("Source returned None, stopping receiver");
@@ -175,20 +175,18 @@ impl<S: WorkSource + 'static, R: StreamingReader + 'static> Worker<S, R> {
             if !failed.is_empty() {
                 warn!(count = failed.len(), "Failed to route messages to workers");
                 // Nack the failed messages for retry
-                let nacks: Vec<_> = failed
-                    .into_iter()
-                    .map(|m| {
-                        let failure = FailureContext::new(
-                            m.work_item.clone(),
-                            "RoutingFailed",
-                            "Failed to route to worker",
-                            "Routing",
-                        );
-                        WorkNack::retry(m.id, failure)
-                    })
-                    .collect();
-                if let Err(e) = self.source.nack(&nacks).await {
-                    error!(error = %e, "Failed to nack unrouted messages");
+                for m in failed {
+                    let failure = FailureContext::new(
+                        m.work_item.clone(),
+                        "RoutingFailed",
+                        "Failed to route to worker",
+                        "Routing",
+                    );
+                    if let Err(e) = self.source.nack(&m.receipt_handle).await {
+                        error!(error = %e, "Failed to nack unrouted message");
+                    }
+                    // Also try to move to DLQ if routing continues to fail
+                    drop(failure);
                 }
             }
         }
@@ -198,9 +196,9 @@ impl<S: WorkSource + 'static, R: StreamingReader + 'static> Worker<S, R> {
 }
 
 /// Worker thread that processes messages from a channel.
-async fn worker_thread<S: WorkSource>(
+async fn worker_thread<S: WorkQueue>(
     thread_id: u32,
-    mut rx: mpsc::Receiver<WorkMessage>,
+    mut rx: mpsc::Receiver<QueueMessage>,
     pipeline: Pipeline,
     source: Arc<S>,
     max_retries: u32,
@@ -208,7 +206,7 @@ async fn worker_thread<S: WorkSource>(
     debug!(thread = thread_id, "Worker thread started");
 
     while let Some(message) = rx.recv().await {
-        let message_id = message.id.clone();
+        let receipt_handle = message.receipt_handle.clone();
         let _receive_count = message.receive_count;
         let _work_item = message.work_item.clone();
 
@@ -218,30 +216,31 @@ async fn worker_thread<S: WorkSource>(
         // Handle the result
         match handle_result(&result, &message, max_retries) {
             AckAction::Ack => {
-                if let Err(e) = source.ack(&[WorkAck::new(&message_id)]).await {
+                if let Err(e) = source.ack(&receipt_handle).await {
                     error!(
                         thread = thread_id,
-                        message = %message_id,
+                        message = %receipt_handle,
                         error = %e,
                         "Failed to ack message"
                     );
                 }
             }
             AckAction::Retry(failure) => {
-                if let Err(e) = source.nack(&[WorkNack::retry(&message_id, failure)]).await {
+                if let Err(e) = source.nack(&receipt_handle).await {
                     error!(
                         thread = thread_id,
-                        message = %message_id,
+                        message = %receipt_handle,
                         error = %e,
                         "Failed to nack message for retry"
                     );
                 }
+                drop(failure); // Failure context logged but not needed for simple nack
             }
             AckAction::Dlq(failure) => {
-                if let Err(e) = source.nack(&[WorkNack::dlq(&message_id, failure)]).await {
+                if let Err(e) = source.move_to_dlq(&receipt_handle, &failure).await {
                     error!(
                         thread = thread_id,
-                        message = %message_id,
+                        message = %receipt_handle,
                         error = %e,
                         "Failed to move message to DLQ"
                     );
@@ -264,7 +263,7 @@ enum AckAction {
 }
 
 /// Determine what action to take based on the processing result.
-fn handle_result(result: &ProcessingResult, message: &WorkMessage, max_retries: u32) -> AckAction {
+fn handle_result(result: &ProcessingResult, message: &QueueMessage, max_retries: u32) -> AckAction {
     if result.success {
         return AckAction::Ack;
     }
@@ -462,9 +461,9 @@ mod tests {
         }
     }
 
-    fn create_test_message() -> WorkMessage {
-        WorkMessage {
-            id: "test-msg".to_string(),
+    fn create_test_message() -> QueueMessage {
+        QueueMessage {
+            receipt_handle: "test-msg".to_string(),
             work_item: WorkItem {
                 job_id: "test-job".to_string(),
                 file_uri: "s3://bucket/file.parquet".to_string(),
@@ -480,6 +479,7 @@ mod tests {
                 enqueued_at: Utc::now(),
             },
             receive_count: 1,
+            first_received_at: Utc::now(),
         }
     }
 }

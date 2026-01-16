@@ -1,8 +1,8 @@
 //! File processing pipeline.
 
 use super::ThreadStats;
-use crate::source::WorkMessage;
 use crate::stats::WorkerStats;
+use pf_traits::QueueMessage;
 use arrow::record_batch::RecordBatch;
 use futures::StreamExt;
 use pf_error::{classify_error, ErrorCategory, PfError, ProcessingStage};
@@ -132,7 +132,7 @@ impl Pipeline {
     }
 
     /// Process a single work item.
-    pub async fn process(&self, message: &WorkMessage) -> ProcessingResult {
+    pub async fn process(&self, message: &QueueMessage) -> ProcessingResult {
         let start = Instant::now();
         let work_item = &message.work_item;
 
@@ -346,9 +346,9 @@ mod tests {
         Batch::new(record_batch, "test.parquet", 0)
     }
 
-    fn create_test_message(file_uri: &str) -> WorkMessage {
-        WorkMessage {
-            id: "test-msg".to_string(),
+    fn create_test_message(file_uri: &str) -> QueueMessage {
+        QueueMessage {
+            receipt_handle: "test-msg".to_string(),
             work_item: WorkItem {
                 job_id: "test-job".to_string(),
                 file_uri: file_uri.to_string(),
@@ -364,6 +364,7 @@ mod tests {
                 enqueued_at: Utc::now(),
             },
             receive_count: 1,
+            first_received_at: Utc::now(),
         }
     }
 
