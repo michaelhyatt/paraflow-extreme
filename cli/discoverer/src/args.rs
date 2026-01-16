@@ -112,16 +112,16 @@ pub struct Cli {
     #[arg(long, default_value = "20", value_parser = parse_positive_usize)]
     pub parallel_prefixes: usize,
 
-    // === Output Options ===
-    /// Output destination
+    // === Destination Options ===
+    /// Output destination type
     #[arg(long, value_enum, default_value = "stdout")]
-    pub output: OutputType,
+    pub destination: DestinationType,
 
-    /// Output format for stdout output
+    /// Output format for stdout destination
     #[arg(long, value_enum, default_value = "jsonl")]
     pub output_format: OutputFormatArg,
 
-    /// SQS queue URL (required when output=sqs)
+    /// SQS queue URL (required when destination=sqs)
     #[arg(long, env = "PF_SQS_QUEUE_URL")]
     pub sqs_queue_url: Option<String>,
 
@@ -139,9 +139,9 @@ pub struct Cli {
     pub log_level: LogLevel,
 }
 
-/// Output destination type.
+/// Destination type.
 #[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum OutputType {
+pub enum DestinationType {
     /// Output to stdout
     Stdout,
     /// Output to SQS queue
