@@ -4,11 +4,21 @@
 
 set -e
 
+# Change to repo root directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$REPO_ROOT"
+
 ENDPOINT="http://localhost:4566"
 REGION="us-east-1"
 BUCKET="test-bucket"
 PREFIX="test-data/"
 SQS_QUEUE_URL="http://localhost:4566/000000000000/work-queue"
+
+# Set dummy AWS credentials for LocalStack
+export AWS_ACCESS_KEY_ID=test
+export AWS_SECRET_ACCESS_KEY=test
+export AWS_DEFAULT_REGION=$REGION
 
 echo "=================================="
 echo "ParaFlow Extreme Integration Test"
@@ -26,7 +36,9 @@ echo ""
 
 # Create test data directory
 echo "2. Creating test data..."
-aws --endpoint-url=$ENDPOINT s3 mb s3://$BUCKET 2>/dev/null || true
+
+# Create bucket using curl (avoids AWS CLI v2 compatibility issues with LocalStack)
+curl -s -X PUT "${ENDPOINT}/${BUCKET}" > /dev/null 2>&1 || true
 
 # Create a simple test NDJSON file
 cat > /tmp/test-data.ndjson << 'EOF'
@@ -37,7 +49,10 @@ cat > /tmp/test-data.ndjson << 'EOF'
 {"id": 5, "name": "Eve", "score": 91}
 EOF
 
-aws --endpoint-url=$ENDPOINT s3 cp /tmp/test-data.ndjson s3://$BUCKET/${PREFIX}test-data.ndjson
+# Upload using curl (avoids AWS CLI v2 x-amz-trailer header issues)
+curl -s -X PUT "${ENDPOINT}/${BUCKET}/${PREFIX}test-data.ndjson" \
+    --data-binary @/tmp/test-data.ndjson \
+    -H "Content-Type: application/x-ndjson" > /dev/null
 echo "   Uploaded test NDJSON file"
 echo ""
 
@@ -55,7 +70,7 @@ echo ""
 RESULT=$(./target/release/pf-discoverer \
     --bucket $BUCKET \
     --prefix $PREFIX \
-    --endpoint $ENDPOINT \
+    --s3-endpoint $ENDPOINT \
     --region $REGION \
   | ./target/release/pf-worker \
       --input stdin \

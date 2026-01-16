@@ -17,7 +17,7 @@ pub struct S3Client {
 impl S3Client {
     /// Create a new S3 client with the given region and optional endpoint.
     pub async fn new(region: &str, endpoint: Option<&str>) -> Result<Self> {
-        let config = if let Some(endpoint_url) = endpoint {
+        let sdk_config = if let Some(endpoint_url) = endpoint {
             aws_config::defaults(aws_config::BehaviorVersion::latest())
                 .region(aws_sdk_s3::config::Region::new(region.to_string()))
                 .endpoint_url(endpoint_url)
@@ -30,7 +30,12 @@ impl S3Client {
                 .await
         };
 
-        let client = Client::new(&config);
+        // Build S3 client with path-style access for LocalStack compatibility
+        let s3_config = aws_sdk_s3::config::Builder::from(&sdk_config)
+            .force_path_style(endpoint.is_some())
+            .build();
+
+        let client = Client::from_conf(s3_config);
         Ok(Self { client })
     }
 
