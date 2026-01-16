@@ -2519,6 +2519,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-s3",
  "aws-sdk-sqs",
+ "base64",
  "chrono",
  "futures",
  "pf-error",
