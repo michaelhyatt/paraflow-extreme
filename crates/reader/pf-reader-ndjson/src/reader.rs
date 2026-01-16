@@ -16,9 +16,10 @@ use object_store::ObjectStore;
 use pf_error::{PfError, ReaderError, Result};
 use pf_traits::{BatchStream, FileMetadata, StreamingReader};
 use pf_types::Batch;
+use std::collections::HashMap;
 use std::io::BufRead;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
 use tokio_util::io::StreamReader;
@@ -117,6 +118,9 @@ impl Compression {
     }
 }
 
+/// Cache key for local filesystem object store.
+const LOCAL_STORE_KEY: &str = "__local__";
+
 /// Streaming NDJSON file reader.
 ///
 /// Uses streaming I/O to read NDJSON files with O(batch_size) memory,
@@ -135,31 +139,68 @@ impl Compression {
 /// Automatically detects and handles:
 /// - `.gz` / `.gzip` - Gzip compression
 /// - `.zst` / `.zstd` - Zstd compression
+///
+/// # Object Store Caching
+///
+/// Object stores are cached by bucket name (for S3) or a sentinel key (for local files)
+/// to avoid creating new clients for each file access. This reduces connection setup
+/// overhead when processing many files.
 pub struct NdjsonReader {
     config: NdjsonReaderConfig,
+    /// Cache of object stores by bucket name (S3) or LOCAL_STORE_KEY (local files).
+    /// Uses RwLock for thread-safe read-heavy access pattern.
+    store_cache: RwLock<HashMap<String, Arc<dyn ObjectStore>>>,
 }
 
 impl NdjsonReader {
     /// Create a new NDJSON reader with the given configuration.
     pub async fn new(config: NdjsonReaderConfig) -> Result<Self> {
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            store_cache: RwLock::new(HashMap::new()),
+        })
     }
 
     /// Create an NDJSON reader for local files only (no S3 support).
     pub fn local_only() -> Self {
         Self {
             config: NdjsonReaderConfig::new("local"),
+            store_cache: RwLock::new(HashMap::new()),
         }
     }
 
-    /// Create an object store for the given URI.
-    fn create_object_store(&self, uri: &str) -> Result<(Arc<dyn ObjectStore>, ObjectPath)> {
-        if uri.starts_with("s3://") {
-            let (bucket, key) = parse_s3_uri(uri)?;
+    /// Get or create an object store for the given cache key.
+    ///
+    /// This method checks the cache first and returns a cached store if available.
+    /// Otherwise, it creates a new store, caches it, and returns it.
+    fn get_or_create_store(&self, cache_key: &str) -> Result<Arc<dyn ObjectStore>> {
+        // Fast path: check if store exists in cache (read lock)
+        {
+            let cache = self.store_cache.read().unwrap();
+            if let Some(store) = cache.get(cache_key) {
+                debug!(cache_key = cache_key, "Using cached object store");
+                return Ok(Arc::clone(store));
+            }
+        }
 
-            // Start with a new builder (don't use from_env to avoid IMDS fallback)
+        // Slow path: create new store (write lock)
+        let mut cache = self.store_cache.write().unwrap();
+
+        // Double-check in case another thread created it while we waited
+        if let Some(store) = cache.get(cache_key) {
+            debug!(cache_key = cache_key, "Using cached object store (after lock)");
+            return Ok(Arc::clone(store));
+        }
+
+        // Create the appropriate store
+        let store: Arc<dyn ObjectStore> = if cache_key == LOCAL_STORE_KEY {
+            debug!("Creating new local filesystem object store");
+            Arc::new(LocalFileSystem::new())
+        } else {
+            // cache_key is the bucket name for S3
+            debug!(bucket = cache_key, "Creating new S3 object store");
             let mut builder = AmazonS3Builder::new()
-                .with_bucket_name(&bucket)
+                .with_bucket_name(cache_key)
                 .with_region(&self.config.region);
 
             // Use explicit credentials if provided (resolved by caller via AWS SDK)
@@ -191,9 +232,22 @@ impl NdjsonReader {
                     e
                 )))
             })?;
+            Arc::new(store)
+        };
 
+        cache.insert(cache_key.to_string(), Arc::clone(&store));
+        Ok(store)
+    }
+
+    /// Create an object store for the given URI.
+    ///
+    /// Uses a cache to reuse object stores by bucket name (S3) or for local files.
+    fn create_object_store(&self, uri: &str) -> Result<(Arc<dyn ObjectStore>, ObjectPath)> {
+        if uri.starts_with("s3://") {
+            let (bucket, key) = parse_s3_uri(uri)?;
+            let store = self.get_or_create_store(&bucket)?;
             let path = ObjectPath::from(key);
-            Ok((Arc::new(store), path))
+            Ok((store, path))
         } else {
             let path_str = if uri.starts_with("file://") {
                 uri.strip_prefix("file://").unwrap()
@@ -201,12 +255,12 @@ impl NdjsonReader {
                 uri
             };
 
-            let store = LocalFileSystem::new();
+            let store = self.get_or_create_store(LOCAL_STORE_KEY)?;
             let path = ObjectPath::from_absolute_path(path_str).map_err(|e| {
                 PfError::Reader(ReaderError::Io(format!("Invalid local path '{}': {}", uri, e)))
             })?;
 
-            Ok((Arc::new(store), path))
+            Ok((store, path))
         }
     }
 
@@ -720,7 +774,10 @@ mod tests {
 
         // Create reader with small batch size
         let config = NdjsonReaderConfig::new("local").with_batch_size(100);
-        let reader = NdjsonReader { config };
+        let reader = NdjsonReader {
+            config,
+            store_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+        };
 
         let mut stream = reader.read_stream(path).await.unwrap();
 
@@ -807,7 +864,10 @@ mod tests {
         let path = file.path().to_str().unwrap();
 
         let config = NdjsonReaderConfig::new("local").with_batch_size(500);
-        let reader = NdjsonReader { config };
+        let reader = NdjsonReader {
+            config,
+            store_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+        };
 
         let mut stream = reader.read_stream(path).await.unwrap();
 
@@ -851,5 +911,54 @@ mod tests {
         }
 
         assert_eq!(total_rows, 3);
+    }
+
+    #[tokio::test]
+    async fn test_object_store_cache_reuse() {
+        // Create two test files
+        let file1 = create_test_ndjson_file(50);
+        let file2 = create_test_ndjson_file(75);
+        let path1 = file1.path().to_str().unwrap();
+        let path2 = file2.path().to_str().unwrap();
+
+        let reader = NdjsonReader::local_only();
+
+        // Verify cache is initially empty
+        {
+            let cache = reader.store_cache.read().unwrap();
+            assert!(cache.is_empty(), "Cache should be empty initially");
+        }
+
+        // Read first file
+        let mut stream1 = reader.read_stream(path1).await.unwrap();
+        while let Some(batch_result) = stream1.next().await {
+            batch_result.unwrap();
+        }
+
+        // Verify cache has one entry for local store
+        {
+            let cache = reader.store_cache.read().unwrap();
+            assert_eq!(cache.len(), 1, "Cache should have one entry after first read");
+            assert!(
+                cache.contains_key(super::LOCAL_STORE_KEY),
+                "Cache should contain local store key"
+            );
+        }
+
+        // Read second file - should reuse the same store
+        let mut stream2 = reader.read_stream(path2).await.unwrap();
+        while let Some(batch_result) = stream2.next().await {
+            batch_result.unwrap();
+        }
+
+        // Verify cache still has only one entry (reused)
+        {
+            let cache = reader.store_cache.read().unwrap();
+            assert_eq!(
+                cache.len(),
+                1,
+                "Cache should still have one entry after second read (store reused)"
+            );
+        }
     }
 }
