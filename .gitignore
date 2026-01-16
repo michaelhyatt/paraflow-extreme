@@ -1,0 +1,43 @@
+# Rust build artifacts
+/target/
+**/target/
+
+# Cargo lock file (keep for binary projects)
+# Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Environment files
+.env
+.env.local
+*.env
+
+# Log files
+*.log
+logs/
+
+# Test outputs
+*.profraw
+*.profdata
+
+# Benchmark results
+criterion/
+
+# Coverage
+coverage/
+*.gcda
+*.gcno
+lcov.info
+tarpaulin-report.html
+
+# Local development
+docker-compose.override.yml
+localstack/

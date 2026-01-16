@@ -1,0 +1,9 @@
+[package]
+name = "pf-dlq"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Placeholder for pf-dlq"
+
+[dependencies]
