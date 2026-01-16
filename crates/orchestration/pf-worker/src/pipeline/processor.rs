@@ -271,14 +271,9 @@ impl Pipeline {
             }
         }
 
-        // Flush the destination
-        if let Err(e) = self.destination.flush().await {
-            warn!(
-                thread = self.thread_id,
-                error = %e,
-                "Failed to flush destination"
-            );
-        }
+        // Note: Per-file flush removed to reduce overhead for small files.
+        // The Worker handles final flush on shutdown (worker.rs).
+        // For time-based or threshold-based flushing, see BatchAccumulator.
 
         if failed_records > 0 {
             ProcessingResult::partial(total_records, failed_records, total_bytes_read, total_bytes_written)

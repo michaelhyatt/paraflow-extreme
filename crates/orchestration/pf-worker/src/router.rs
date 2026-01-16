@@ -1,6 +1,7 @@
 //! Work router for distributing work items to thread pool.
 
 use crate::source::WorkMessage;
+use futures::future::join_all;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use tokio::sync::mpsc;
@@ -76,17 +77,21 @@ impl WorkRouter {
         sender.send(message).await.map_err(|e| e.0)
     }
 
-    /// Route a batch of work messages to workers.
+    /// Route a batch of work messages to workers concurrently.
     ///
-    /// Returns the messages that could not be routed.
+    /// Uses parallel routing to avoid head-of-line blocking when one worker's
+    /// channel is full. Returns the messages that could not be routed.
     pub async fn route_batch(&self, messages: Vec<WorkMessage>) -> Vec<WorkMessage> {
-        let mut failed = Vec::new();
-
-        for message in messages {
-            if let Err(msg) = self.route(message).await {
-                failed.push(msg);
-            }
+        if messages.is_empty() {
+            return Vec::new();
         }
+
+        // Route all messages concurrently
+        let futures: Vec<_> = messages.into_iter().map(|msg| self.route(msg)).collect();
+        let results = join_all(futures).await;
+
+        // Collect failed messages
+        let failed: Vec<_> = results.into_iter().filter_map(|r| r.err()).collect();
 
         if !failed.is_empty() {
             debug!("{} messages could not be routed", failed.len());

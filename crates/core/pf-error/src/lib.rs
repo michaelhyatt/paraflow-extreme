@@ -91,10 +91,6 @@ pub enum ReaderError {
     #[error("I/O error: {0}")]
     Io(String),
 
-    /// Generic I/O error (alias for compatibility)
-    #[error("I/O error: {0}")]
-    IoError(String),
-
     /// Schema mismatch or unsupported type
     #[error("Schema error: {0}")]
     Schema(String),
@@ -263,7 +259,7 @@ fn classify_reader_error(error: &ReaderError, stage: ProcessingStage) -> ErrorCa
         ReaderError::NotFound(_) => ErrorCategory::Permanent,
         ReaderError::AccessDenied(_) => ErrorCategory::Permanent,
         ReaderError::InvalidFormat(_) => ErrorCategory::Permanent,
-        ReaderError::Io(_) | ReaderError::IoError(_) => {
+        ReaderError::Io(_) => {
             // I/O errors during S3 download might be transient
             if matches!(stage, ProcessingStage::S3Download) {
                 ErrorCategory::Transient
