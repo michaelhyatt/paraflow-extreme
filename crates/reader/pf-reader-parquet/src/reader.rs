@@ -103,7 +103,7 @@ impl ParquetReader {
             if e.kind() == std::io::ErrorKind::NotFound {
                 PfError::Reader(ReaderError::NotFound(path.to_string()))
             } else {
-                PfError::Reader(ReaderError::IoError(format!(
+                PfError::Reader(ReaderError::Io(format!(
                     "Failed to open file '{}': {}",
                     path, e
                 )))
@@ -112,7 +112,7 @@ impl ParquetReader {
 
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer).map_err(|e| {
-            PfError::Reader(ReaderError::IoError(format!(
+            PfError::Reader(ReaderError::Io(format!(
                 "Failed to read file '{}': {}",
                 path, e
             )))
@@ -143,7 +143,7 @@ impl ParquetReader {
                 if e.kind() == std::io::ErrorKind::NotFound {
                     PfError::Reader(ReaderError::NotFound(path.to_string()))
                 } else {
-                    PfError::Reader(ReaderError::IoError(format!(
+                    PfError::Reader(ReaderError::Io(format!(
                         "Failed to get metadata for '{}': {}",
                         path, e
                     )))
