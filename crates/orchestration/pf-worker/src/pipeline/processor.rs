@@ -1,15 +1,16 @@
 //! File processing pipeline.
 
 use super::ThreadStats;
+use crate::config::DEFAULT_ACCUMULATOR_THRESHOLD_BYTES;
 use crate::stats::WorkerStats;
-use pf_traits::QueueMessage;
-use arrow::record_batch::RecordBatch;
 use futures::StreamExt;
+use pf_accumulator::BatchAccumulator;
 use pf_error::{classify_error, ErrorCategory, PfError, ProcessingStage};
-use pf_traits::{BatchIndexer, BatchStream, StreamingReader};
+use pf_traits::{BatchIndexer, BatchStream, QueueMessage, StreamingReader};
 use pf_types::WorkItem;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::Mutex;
 use tracing::{debug, error, info, trace, warn};
 
 /// Processing result for a single file.
@@ -92,6 +93,9 @@ impl ProcessingResult {
 ///
 /// Each thread has its own pipeline instance that processes files
 /// through Reader → Transform → Destination stages.
+///
+/// The pipeline uses a [`BatchAccumulator`] to align file batch sizes with
+/// optimal indexer batch sizes (e.g., 10MB for Elasticsearch).
 pub struct Pipeline {
     /// Thread identifier
     thread_id: u32,
@@ -107,22 +111,51 @@ pub struct Pipeline {
 
     /// Global worker statistics
     global_stats: Arc<WorkerStats>,
+
+    /// Batch accumulator for optimal indexer batch sizing.
+    /// Uses Mutex for thread-safe interior mutability.
+    accumulator: Mutex<BatchAccumulator>,
 }
 
 impl Pipeline {
-    /// Create a new pipeline.
+    /// Create a new pipeline with default accumulator threshold.
     pub fn new(
         thread_id: u32,
         reader: Arc<dyn StreamingReader>,
         destination: Arc<dyn BatchIndexer>,
         global_stats: Arc<WorkerStats>,
     ) -> Self {
+        Self::with_accumulator_threshold(
+            thread_id,
+            reader,
+            destination,
+            global_stats,
+            DEFAULT_ACCUMULATOR_THRESHOLD_BYTES,
+            None,
+        )
+    }
+
+    /// Create a new pipeline with custom accumulator thresholds.
+    pub fn with_accumulator_threshold(
+        thread_id: u32,
+        reader: Arc<dyn StreamingReader>,
+        destination: Arc<dyn BatchIndexer>,
+        global_stats: Arc<WorkerStats>,
+        threshold_bytes: usize,
+        threshold_records: Option<usize>,
+    ) -> Self {
+        let mut accumulator = BatchAccumulator::new(threshold_bytes);
+        if let Some(records) = threshold_records {
+            accumulator = accumulator.with_record_threshold(records);
+        }
+
         Self {
             thread_id,
             reader,
             destination,
             stats: Arc::new(ThreadStats::new(thread_id)),
             global_stats,
+            accumulator: Mutex::new(accumulator),
         }
     }
 
@@ -207,7 +240,6 @@ impl Pipeline {
         let mut total_bytes_read = 0u64;
         let mut total_bytes_written = 0u64;
         let mut failed_records = 0u64;
-        let mut batch_buffer: Vec<Arc<RecordBatch>> = Vec::new();
 
         while let Some(batch_result) = stream.next().await {
             match batch_result {
@@ -218,7 +250,6 @@ impl Pipeline {
 
                     // Get the inner RecordBatch
                     let record_batch = batch.into_arc();
-                    batch_buffer.push(record_batch);
 
                     trace!(
                         thread = self.thread_id,
@@ -226,21 +257,32 @@ impl Pipeline {
                         "Received batch"
                     );
 
-                    // Send batches to destination when buffer is full
-                    // For now, send each batch immediately
-                    if !batch_buffer.is_empty() {
-                        match self.destination.index_batches(&batch_buffer).await {
+                    // Add batch to accumulator - flush if threshold exceeded
+                    let accumulator_result = self.accumulator.lock().await.add(record_batch);
+
+                    if let Some(batches_to_flush) = accumulator_result.batches_to_flush {
+                        trace!(
+                            thread = self.thread_id,
+                            batch_count = batches_to_flush.len(),
+                            size_bytes = accumulator_result.flush_size_bytes,
+                            "Flushing accumulated batches to indexer"
+                        );
+
+                        match self.destination.index_batches(&batches_to_flush).await {
                             Ok(result) => {
                                 total_records += result.success_count;
                                 total_bytes_written += result.bytes_sent;
                                 failed_records += result.failed_records.len() as u64;
 
-                                self.stats.record_batch(result.success_count, result.bytes_sent);
+                                self.stats
+                                    .record_batch(result.success_count, result.bytes_sent);
                                 self.global_stats.record_batch();
 
                                 if !result.failed_records.is_empty() {
-                                    self.stats.record_failed_records(result.failed_records.len() as u64);
-                                    self.global_stats.record_failed_records(result.failed_records.len() as u64);
+                                    self.stats
+                                        .record_failed_records(result.failed_records.len() as u64);
+                                    self.global_stats
+                                        .record_failed_records(result.failed_records.len() as u64);
                                 }
                             }
                             Err(e) => {
@@ -252,7 +294,6 @@ impl Pipeline {
                                 return ProcessingResult::failure(e, ProcessingStage::EsIndexing);
                             }
                         }
-                        batch_buffer.clear();
                     }
                 }
                 Err(e) => {
@@ -271,12 +312,50 @@ impl Pipeline {
             }
         }
 
-        // Note: Per-file flush removed to reduce overhead for small files.
-        // The Worker handles final flush on shutdown (worker.rs).
-        // For time-based or threshold-based flushing, see BatchAccumulator.
+        // Flush remaining accumulated batches at end of file
+        let remaining = self.accumulator.lock().await.flush();
+        if !remaining.is_empty() {
+            trace!(
+                thread = self.thread_id,
+                batch_count = remaining.len(),
+                "Flushing remaining accumulated batches at end of file"
+            );
+
+            match self.destination.index_batches(&remaining).await {
+                Ok(result) => {
+                    total_records += result.success_count;
+                    total_bytes_written += result.bytes_sent;
+                    failed_records += result.failed_records.len() as u64;
+
+                    self.stats
+                        .record_batch(result.success_count, result.bytes_sent);
+                    self.global_stats.record_batch();
+
+                    if !result.failed_records.is_empty() {
+                        self.stats
+                            .record_failed_records(result.failed_records.len() as u64);
+                        self.global_stats
+                            .record_failed_records(result.failed_records.len() as u64);
+                    }
+                }
+                Err(e) => {
+                    error!(
+                        thread = self.thread_id,
+                        error = %e,
+                        "Failed to index remaining batches"
+                    );
+                    return ProcessingResult::failure(e, ProcessingStage::EsIndexing);
+                }
+            }
+        }
 
         if failed_records > 0 {
-            ProcessingResult::partial(total_records, failed_records, total_bytes_read, total_bytes_written)
+            ProcessingResult::partial(
+                total_records,
+                failed_records,
+                total_bytes_read,
+                total_bytes_written,
+            )
         } else {
             ProcessingResult::success(total_records, total_bytes_read, total_bytes_written)
         }
@@ -287,9 +366,10 @@ impl Pipeline {
 mod tests {
     use super::*;
     use crate::destination::StatsDestination;
-    use async_trait::async_trait;
     use arrow::array::Int64Array;
     use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use async_trait::async_trait;
     use chrono::Utc;
     use futures::stream;
     use pf_error::Result;
@@ -408,7 +488,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_pipeline_multiple_batches() {
-        let batches = vec![create_test_batch(50), create_test_batch(75), create_test_batch(25)];
+        let batches = vec![
+            create_test_batch(50),
+            create_test_batch(75),
+            create_test_batch(25),
+        ];
         let reader = Arc::new(MockReader::new(batches));
         let destination = Arc::new(StatsDestination::new());
         let global_stats = Arc::new(WorkerStats::new());
@@ -421,6 +505,50 @@ mod tests {
         assert!(result.success);
         assert_eq!(result.records_processed, 150);
         assert_eq!(destination.get_stats().records, 150);
+        // With 10MB threshold, all small batches are accumulated and flushed together
+        // So we expect 1 flush (containing 3 batches) at end of file
+        assert_eq!(destination.get_stats().batches, 3);
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_accumulator_threshold() {
+        // Create batches that will trigger accumulator flush
+        let batches = vec![
+            create_test_batch(100),
+            create_test_batch(100),
+            create_test_batch(100),
+        ];
+        let reader = Arc::new(MockReader::new(batches));
+        let destination = Arc::new(StatsDestination::new());
+        let global_stats = Arc::new(WorkerStats::new());
+
+        // Use a small threshold that triggers flush after first batch
+        let single_batch_size = {
+            let batch = create_test_batch(100);
+            batch.record_batch().get_array_memory_size()
+        };
+        let threshold = single_batch_size + single_batch_size / 2; // Holds ~1.5 batches
+
+        let pipeline = Pipeline::with_accumulator_threshold(
+            0,
+            reader,
+            destination.clone(),
+            global_stats,
+            threshold,
+            None,
+        );
+        let message = create_test_message("s3://bucket/test.parquet");
+
+        let result = pipeline.process(&message).await;
+
+        assert!(result.success);
+        assert_eq!(result.records_processed, 300);
+        assert_eq!(destination.get_stats().records, 300);
+        // With small threshold: flush after batch 2, flush remaining after batch 3
+        // Batch 1 accumulates, Batch 2 triggers flush of 1, Batch 3 triggers flush of 2, remaining flush of 3
+        // Actually: batch1 accumulates (size < threshold), batch2 would exceed so flush batch1, keep batch2
+        // batch3 would exceed so flush batch2, keep batch3, end of file flushes batch3
+        // So 3 flushes total, each with 1 batch = 3 batches sent individually
         assert_eq!(destination.get_stats().batches, 3);
     }
 

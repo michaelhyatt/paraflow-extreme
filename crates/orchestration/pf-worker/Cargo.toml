@@ -10,6 +10,7 @@ description = "High-throughput data processing worker for paraflow-extreme"
 pf-types = { workspace = true }
 pf-traits = { workspace = true }
 pf-error = { workspace = true }
+pf-accumulator = { path = "../../support/pf-accumulator" }
 pf-reader-parquet = { path = "../../reader/pf-reader-parquet" }
 pf-reader-ndjson = { path = "../../reader/pf-reader-ndjson" }
 
