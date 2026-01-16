@@ -15,6 +15,15 @@ use args::Cli;
 async fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
 
+    // Disable IMDS if requested (must be set before any AWS SDK calls)
+    // SAFETY: This is safe because we're setting the environment variable early in main(),
+    // before spawning any threads, and the variable is only used by AWS SDK initialization.
+    if args.no_imds {
+        unsafe {
+            std::env::set_var("AWS_EC2_METADATA_DISABLED", "true");
+        }
+    }
+
     // Initialize logging (to stderr, so stdout is clean for output)
     run::init_logging(args.log_level)?;
 

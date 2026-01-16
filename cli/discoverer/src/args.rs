@@ -62,6 +62,14 @@ pub struct Cli {
     #[arg(long, env = "AWS_REGION", default_value = "us-east-1")]
     pub region: String,
 
+    /// Disable IMDS (EC2 Instance Metadata Service) credential/region provider.
+    ///
+    /// Use this flag when running outside AWS (local development, non-EC2 environments)
+    /// to avoid 1+ second timeout delays and warning messages while the SDK attempts
+    /// to reach the IMDS endpoint at 169.254.169.254.
+    #[arg(long, env = "AWS_EC2_METADATA_DISABLED")]
+    pub no_imds: bool,
+
     /// AWS access key ID
     #[arg(long, env = "AWS_ACCESS_KEY_ID")]
     pub access_key: Option<String>,
