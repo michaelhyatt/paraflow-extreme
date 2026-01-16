@@ -1,6 +1,22 @@
 //! CLI argument definitions for pf-discoverer.
 
 use clap::{Parser, ValueEnum};
+pub use pf_cli_common::LogLevel;
+
+mod built_info {
+    include!(concat!(env!("OUT_DIR"), "/built.rs"));
+}
+
+/// Get the version string with build metadata.
+fn version_string() -> &'static str {
+    // Use Box::leak to create a 'static string at runtime
+    // This is acceptable as it's only called once for --version
+    let version = env!("CARGO_PKG_VERSION");
+    let commit = built_info::GIT_COMMIT_HASH_SHORT.unwrap_or("unknown");
+    let date = built_info::BUILT_TIME_UTC;
+    let s = format!("{version} ({commit} {date})");
+    Box::leak(s.into_boxed_str())
+}
 
 /// S3 file discovery for paraflow-extreme.
 ///
@@ -26,7 +42,7 @@ use clap::{Parser, ValueEnum};
 ///   pf-discoverer -b my-bucket --min-size 1024 --modified-after 2024-01-01
 #[derive(Parser, Debug)]
 #[command(name = "pf-discoverer")]
-#[command(version, about, long_about = None)]
+#[command(version = version_string(), about, long_about = None)]
 pub struct Cli {
     // === S3 Configuration ===
     /// S3 bucket name
@@ -41,6 +57,7 @@ pub struct Cli {
     #[arg(long, env = "PF_S3_ENDPOINT")]
     pub s3_endpoint: Option<String>,
 
+    // === AWS Configuration ===
     /// AWS region
     #[arg(long, env = "AWS_REGION", default_value = "us-east-1")]
     pub region: String,
@@ -59,12 +76,23 @@ pub struct Cli {
 
     // === Discovery Options ===
     /// Glob pattern to filter files (e.g., "*.parquet")
-    #[arg(long, default_value = "*")]
+    #[arg(short = 'P', long, default_value = "*")]
     pub pattern: String,
 
     /// Maximum number of files to output (0 = unlimited)
     #[arg(long, default_value = "0")]
     pub max_files: usize,
+
+    /// Dry run mode: count and preview files without outputting them
+    ///
+    /// Shows count, total size, and sample files matching the filters
+    /// without writing to stdout or SQS. Useful for testing configurations.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Number of sample files to show in dry-run mode (default: 5)
+    #[arg(long, default_value = "5")]
+    pub sample_count: usize,
 
     // === Partitioning Options ===
     /// Partitioning expression (e.g., "logs/${index}/${year}/")
@@ -144,7 +172,7 @@ pub struct Cli {
 
     // === Logging Options ===
     /// Log level
-    #[arg(long, value_enum, default_value = "info")]
+    #[arg(short = 'l', long, value_enum, default_value = "info")]
     pub log_level: LogLevel,
 }
 
@@ -175,32 +203,6 @@ impl From<OutputFormatArg> for pf_discoverer::OutputFormat {
     }
 }
 
-/// Log level argument.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum LogLevel {
-    /// Trace level (most verbose)
-    Trace,
-    /// Debug level
-    Debug,
-    /// Info level (default)
-    Info,
-    /// Warning level
-    Warn,
-    /// Error level (least verbose)
-    Error,
-}
-
-impl From<LogLevel> for tracing::Level {
-    fn from(level: LogLevel) -> Self {
-        match level {
-            LogLevel::Trace => tracing::Level::TRACE,
-            LogLevel::Debug => tracing::Level::DEBUG,
-            LogLevel::Info => tracing::Level::INFO,
-            LogLevel::Warn => tracing::Level::WARN,
-            LogLevel::Error => tracing::Level::ERROR,
-        }
-    }
-}
 
 /// Parse a positive usize (>= 1).
 fn parse_positive_usize(s: &str) -> Result<usize, String> {

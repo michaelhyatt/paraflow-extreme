@@ -9,6 +9,7 @@ members = [
     "crates/orchestration/*",
     "crates/support/*",
     "cli",
+    "cli/common",
     "cli/discoverer",
     "cli/worker",
     "tests/integration",

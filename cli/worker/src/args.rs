@@ -1,6 +1,22 @@
 //! CLI argument definitions for pf-worker.
 
 use clap::{Parser, ValueEnum};
+pub use pf_cli_common::LogLevel;
+
+mod built_info {
+    include!(concat!(env!("OUT_DIR"), "/built.rs"));
+}
+
+/// Get the version string with build metadata.
+fn version_string() -> &'static str {
+    // Use Box::leak to create a 'static string at runtime
+    // This is acceptable as it's only called once for --version
+    let version = env!("CARGO_PKG_VERSION");
+    let commit = built_info::GIT_COMMIT_HASH_SHORT.unwrap_or("unknown");
+    let date = built_info::BUILT_TIME_UTC;
+    let s = format!("{version} ({commit} {date})");
+    Box::leak(s.into_boxed_str())
+}
 
 /// High-throughput data processing worker for paraflow-extreme.
 ///
@@ -10,20 +26,20 @@ use clap::{Parser, ValueEnum};
 /// ## Examples
 ///
 /// Pipe from discoverer to worker (local testing):
-///   pf-discoverer -b my-bucket --pattern "*.parquet" | pf-worker --destination stdout
+///   pf-discoverer -b my-bucket -P "*.parquet" | pf-worker -d stdout
 ///
 /// Performance testing with stats destination:
-///   pf-discoverer -b my-bucket | pf-worker --destination stats --threads 8
+///   pf-discoverer -b my-bucket | pf-worker -d stats -t 8
 ///
 /// Production with SQS:
-///   pf-worker --input sqs --sqs-queue-url https://sqs.us-east-1.amazonaws.com/123/queue
+///   pf-worker -i sqs --sqs-queue-url https://sqs.us-east-1.amazonaws.com/123/queue
 #[derive(Parser, Debug)]
 #[command(name = "pf-worker")]
-#[command(version, about, long_about = None)]
+#[command(version = version_string(), about, long_about = None)]
 pub struct Cli {
     // === Input Source ===
     /// Input source type
-    #[arg(long, value_enum, default_value = "stdin")]
+    #[arg(short = 'i', long, value_enum, default_value = "stdin")]
     pub input: InputType,
 
     /// SQS queue URL (required when input=sqs)
@@ -48,7 +64,7 @@ pub struct Cli {
 
     // === Destination ===
     /// Output destination type
-    #[arg(long, value_enum, default_value = "stdout")]
+    #[arg(short = 'd', long, value_enum, default_value = "stdout")]
     pub destination: DestinationType,
 
     /// Output format for stdout destination
@@ -57,7 +73,7 @@ pub struct Cli {
 
     // === Processing ===
     /// Number of processing threads (must be >= 1)
-    #[arg(long, default_value_t = num_cpus(), value_parser = parse_positive_usize)]
+    #[arg(short = 't', long, default_value_t = num_cpus(), value_parser = parse_positive_usize)]
     pub threads: usize,
 
     /// Batch size for reading files (must be >= 1)
@@ -72,7 +88,7 @@ pub struct Cli {
     #[arg(long, default_value = "100", value_parser = parse_positive_usize)]
     pub channel_buffer: usize,
 
-    // === S3 Configuration ===
+    // === AWS Configuration ===
     /// AWS region
     #[arg(long, env = "AWS_REGION", default_value = "us-east-1")]
     pub region: String,
@@ -80,6 +96,18 @@ pub struct Cli {
     /// Custom S3 endpoint URL (for LocalStack)
     #[arg(long, env = "PF_S3_ENDPOINT")]
     pub s3_endpoint: Option<String>,
+
+    /// AWS access key ID
+    #[arg(long, env = "AWS_ACCESS_KEY_ID")]
+    pub access_key: Option<String>,
+
+    /// AWS secret access key
+    #[arg(long, env = "AWS_SECRET_ACCESS_KEY")]
+    pub secret_key: Option<String>,
+
+    /// AWS profile name
+    #[arg(long, env = "AWS_PROFILE")]
+    pub profile: Option<String>,
 
     // === Progress Options ===
     /// Enable progress reporting to stderr
@@ -92,7 +120,7 @@ pub struct Cli {
 
     // === Logging ===
     /// Log level
-    #[arg(long, value_enum, default_value = "info")]
+    #[arg(short = 'l', long, value_enum, default_value = "info")]
     pub log_level: LogLevel,
 }
 
@@ -132,32 +160,6 @@ impl From<OutputFormat> for pf_worker::destination::OutputFormat {
     }
 }
 
-/// Log level argument.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum LogLevel {
-    /// Trace level (most verbose)
-    Trace,
-    /// Debug level
-    Debug,
-    /// Info level (default)
-    Info,
-    /// Warning level
-    Warn,
-    /// Error level (least verbose)
-    Error,
-}
-
-impl From<LogLevel> for tracing::Level {
-    fn from(level: LogLevel) -> Self {
-        match level {
-            LogLevel::Trace => tracing::Level::TRACE,
-            LogLevel::Debug => tracing::Level::DEBUG,
-            LogLevel::Info => tracing::Level::INFO,
-            LogLevel::Warn => tracing::Level::WARN,
-            LogLevel::Error => tracing::Level::ERROR,
-        }
-    }
-}
 
 /// Get the number of available CPUs.
 fn num_cpus() -> usize {

@@ -25,6 +25,7 @@ aws-sdk-s3 = { workspace = true }
 pf-types = { workspace = true }
 pf-error = { workspace = true }
 pf-discoverer = { path = "../../crates/orchestration/pf-discoverer" }
+pf-cli-common = { path = "../common" }
 
 # Logging
 tracing = { workspace = true }
@@ -32,3 +33,6 @@ tracing-subscriber = { workspace = true }
 
 # Error handling
 anyhow = { workspace = true }
+
+[build-dependencies]
+built = { version = "0.7", features = ["git2", "chrono"] }
