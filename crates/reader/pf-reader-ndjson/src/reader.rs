@@ -306,7 +306,7 @@ impl StreamingReader for NdjsonReader {
 
         // Convert to tokio AsyncRead
         let bytes_stream = byte_stream.into_stream().map(|result| {
-            result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+            result.map_err(std::io::Error::other)
         });
         let async_read = StreamReader::new(bytes_stream);
 
@@ -379,7 +379,7 @@ impl StreamingReader for NdjsonReader {
 
         let compression = Compression::from_uri(uri);
         let bytes_stream = byte_stream.into_stream().map(|result| {
-            result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+            result.map_err(std::io::Error::other)
         });
         let async_read = StreamReader::new(bytes_stream);
 

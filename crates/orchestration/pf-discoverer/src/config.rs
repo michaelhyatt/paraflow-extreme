@@ -3,18 +3,10 @@
 use serde::{Deserialize, Serialize};
 
 /// Configuration for a discovery run.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DiscoveryConfig {
     /// Maximum number of files to output (0 = unlimited)
     pub max_files: usize,
-}
-
-impl Default for DiscoveryConfig {
-    fn default() -> Self {
-        Self {
-            max_files: 0,
-        }
-    }
 }
 
 impl DiscoveryConfig {
