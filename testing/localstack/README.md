@@ -31,7 +31,7 @@ This directory contains the LocalStack setup for local testing of paraflow-extre
 
 ```bash
 # Run discoverer to find files and pipe to worker
-cargo run --package pf-discoverer -- \
+cargo run --package pf-discoverer-cli -- \
     --bucket test-bucket \
     --prefix data/ \
     --endpoint http://localhost:4566 \
@@ -48,7 +48,7 @@ cargo run --package pf-discoverer -- \
 
 ```bash
 # First, run discoverer to send messages to SQS
-cargo run --package pf-discoverer -- \
+cargo run --package pf-discoverer-cli -- \
     --bucket test-bucket \
     --prefix data/ \
     --endpoint http://localhost:4566 \

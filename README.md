@@ -27,37 +27,53 @@ Reader → Transform+Enrich → Indexer
 
 ## Quick Start
 
-### Local Development (No Cloud Required)
+### Local Development with LocalStack
 
 ```bash
-# Process local Parquet files, output to stdout
-cargo run --package pf-cli -- run-worker \
-    --queue-type memory \
-    --files ./tests/fixtures/*.parquet \
-    --indexer-type stdout
-
-# With transforms
-cargo run --package pf-cli -- run-worker \
-    --queue-type memory \
-    --files ./data/*.parquet \
-    --transform 'if record.value > 100 { record } else { () }' \
-    --indexer-type stdout
-```
-
-### With Docker (Elasticsearch + LocalStack)
-
-```bash
-# Start local infrastructure
+# Start LocalStack (S3 + SQS)
+cd testing/localstack
 docker-compose up -d
 
-# Run with LocalStack SQS and local Elasticsearch
-cargo run --package pf-cli -- run-worker \
-    --queue-type sqs \
-    --sqs-endpoint http://localhost:4566 \
+# Discover files and pipe to worker for processing
+cargo run --package pf-discoverer-cli -- \
+    --bucket test-bucket \
+    --prefix data/ \
+    --s3-endpoint http://localhost:4566 \
+    --region us-east-1 \
+  | cargo run --package pf-worker-cli -- \
+      --input stdin \
+      --destination stats \
+      --s3-endpoint http://localhost:4566 \
+      --region us-east-1 \
+      --threads 4
+
+# Or discover to stdout only (for debugging)
+cargo run --package pf-discoverer-cli -- \
+    --bucket test-bucket \
+    --s3-endpoint http://localhost:4566 \
+    --pattern "*.parquet"
+```
+
+### With SQS Queue (Production-like)
+
+```bash
+# First, run discoverer to send messages to SQS
+cargo run --package pf-discoverer-cli -- \
+    --bucket test-bucket \
+    --prefix data/ \
+    --s3-endpoint http://localhost:4566 \
+    --output sqs \
     --sqs-queue-url http://localhost:4566/000000000000/work-queue \
-    --indexer-type elasticsearch \
-    --es-endpoint http://localhost:9200 \
-    --es-index test-index
+    --sqs-endpoint http://localhost:4566
+
+# Then run worker to process from SQS
+cargo run --package pf-worker-cli -- \
+    --input sqs \
+    --sqs-queue-url http://localhost:4566/000000000000/work-queue \
+    --sqs-endpoint http://localhost:4566 \
+    --destination stats \
+    --s3-endpoint http://localhost:4566 \
+    --threads 4
 ```
 
 ## Architecture
