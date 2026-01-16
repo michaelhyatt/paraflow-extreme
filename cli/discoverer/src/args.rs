@@ -104,12 +104,12 @@ pub struct Cli {
     pub modified_before: Option<String>,
 
     // === Parallelism Options ===
-    /// Maximum concurrent S3 list operations
-    #[arg(long, default_value = "10")]
+    /// Maximum concurrent S3 list operations (must be >= 1)
+    #[arg(long, default_value = "10", value_parser = parse_positive_usize)]
     pub concurrency: usize,
 
-    /// Maximum parallel prefix discoveries
-    #[arg(long, default_value = "20")]
+    /// Maximum parallel prefix discoveries (must be >= 1)
+    #[arg(long, default_value = "20", value_parser = parse_positive_usize)]
     pub parallel_prefixes: usize,
 
     // === Output Options ===
@@ -130,7 +130,7 @@ pub struct Cli {
     pub sqs_endpoint: Option<String>,
 
     /// SQS batch size (1-10)
-    #[arg(long, default_value = "10")]
+    #[arg(long, default_value = "10", value_parser = parse_sqs_batch_size)]
     pub sqs_batch_size: usize,
 
     // === Logging Options ===
@@ -191,4 +191,26 @@ impl From<LogLevel> for tracing::Level {
             LogLevel::Error => tracing::Level::ERROR,
         }
     }
+}
+
+/// Parse a positive usize (>= 1).
+fn parse_positive_usize(s: &str) -> Result<usize, String> {
+    let value: usize = s
+        .parse()
+        .map_err(|_| format!("'{}' is not a valid number", s))?;
+    if value < 1 {
+        return Err(format!("{} is not in 1..", value));
+    }
+    Ok(value)
+}
+
+/// Parse SQS batch size (1-10).
+fn parse_sqs_batch_size(s: &str) -> Result<usize, String> {
+    let value: usize = s
+        .parse()
+        .map_err(|_| format!("'{}' is not a valid number", s))?;
+    if !(1..=10).contains(&value) {
+        return Err(format!("{} is not in 1..=10", value));
+    }
+    Ok(value)
 }
