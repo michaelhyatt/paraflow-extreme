@@ -4,6 +4,36 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Placeholder for pf-discoverer"
+description = "S3 file discovery for paraflow-extreme"
 
 [dependencies]
+# Internal crates
+pf-types = { workspace = true }
+pf-error = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+async-stream = "0.3"
+
+# AWS
+aws-config = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+aws-sdk-sqs = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Pattern matching
+glob = "0.3"
+
+# Logging
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

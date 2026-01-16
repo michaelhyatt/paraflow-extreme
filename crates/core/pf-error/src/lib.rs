@@ -281,9 +281,11 @@ fn classify_anyhow_error(error: &anyhow::Error, stage: ProcessingStage) -> Error
 
     match stage {
         ProcessingStage::S3Download => {
-            if err_string.contains("nosuchkey") || err_string.contains("404") {
-                ErrorCategory::Permanent
-            } else if err_string.contains("accessdenied") || err_string.contains("403") {
+            if err_string.contains("nosuchkey")
+                || err_string.contains("404")
+                || err_string.contains("accessdenied")
+                || err_string.contains("403")
+            {
                 ErrorCategory::Permanent
             } else {
                 ErrorCategory::Transient
@@ -327,7 +329,9 @@ mod tests {
 
     #[test]
     fn test_error_classification_indexer_rate_limited() {
-        let error = PfError::Indexer(IndexerError::RateLimited("429 Too Many Requests".to_string()));
+        let error = PfError::Indexer(IndexerError::RateLimited(
+            "429 Too Many Requests".to_string(),
+        ));
         assert_eq!(
             classify_error(&error, ProcessingStage::EsIndexing),
             ErrorCategory::Transient
@@ -348,7 +352,9 @@ mod tests {
 
     #[test]
     fn test_error_display() {
-        let error = PfError::Reader(ReaderError::NotFound("s3://bucket/file.parquet".to_string()));
+        let error = PfError::Reader(ReaderError::NotFound(
+            "s3://bucket/file.parquet".to_string(),
+        ));
         assert!(error.to_string().contains("File not found"));
     }
 
