@@ -16,6 +16,7 @@ pf-reader-ndjson = { path = "../../reader/pf-reader-ndjson" }
 
 # Async runtime
 tokio = { workspace = true, features = ["full"] }
+tokio-util = "0.7"
 async-trait = { workspace = true }
 futures = { workspace = true }
 

@@ -10,6 +10,7 @@ use pf_worker::{
 };
 use pf_traits::BatchIndexer;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::info;
 
 use crate::args::{Cli, DestinationType, InputType};
@@ -52,6 +53,7 @@ pub async fn execute(args: Cli) -> Result<pf_worker::stats::StatsSnapshot> {
         .with_batch_size(args.batch_size)
         .with_max_retries(args.max_retries)
         .with_channel_buffer(args.channel_buffer)
+        .with_shutdown_timeout(Duration::from_secs(args.shutdown_timeout))
         .with_region(&args.region);
 
     let config = if let Some(ref endpoint) = args.s3_endpoint {
