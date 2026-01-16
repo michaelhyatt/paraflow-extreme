@@ -3,6 +3,9 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+/// Default accumulator threshold for Elasticsearch (10MB).
+pub const DEFAULT_ACCUMULATOR_THRESHOLD_BYTES: usize = 10 * 1024 * 1024;
+
 /// Configuration for a worker instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerConfig {
@@ -27,6 +30,18 @@ pub struct WorkerConfig {
 
     /// Custom S3 endpoint URL (for LocalStack)
     pub s3_endpoint: Option<String>,
+
+    /// Batch accumulator threshold in bytes.
+    ///
+    /// Batches are accumulated until this threshold is exceeded, then flushed
+    /// to the indexer. This improves Elasticsearch bulk API performance.
+    /// Default: 10MB (optimal for Elasticsearch)
+    pub accumulator_threshold_bytes: usize,
+
+    /// Optional record count threshold for the accumulator.
+    ///
+    /// If set, flush is triggered when either byte or record threshold is exceeded.
+    pub accumulator_threshold_records: Option<usize>,
 }
 
 impl Default for WorkerConfig {
@@ -39,6 +54,8 @@ impl Default for WorkerConfig {
             shutdown_timeout: Duration::from_secs(30),
             region: "us-east-1".to_string(),
             s3_endpoint: None,
+            accumulator_threshold_bytes: DEFAULT_ACCUMULATOR_THRESHOLD_BYTES,
+            accumulator_threshold_records: None,
         }
     }
 }
@@ -91,6 +108,23 @@ impl WorkerConfig {
         self
     }
 
+    /// Set the accumulator threshold in bytes.
+    ///
+    /// Batches are accumulated until this threshold is exceeded.
+    /// Default: 10MB (optimal for Elasticsearch)
+    pub fn with_accumulator_threshold_bytes(mut self, threshold: usize) -> Self {
+        self.accumulator_threshold_bytes = threshold;
+        self
+    }
+
+    /// Set the accumulator record count threshold.
+    ///
+    /// If set, flush is triggered when either byte or record threshold is exceeded.
+    pub fn with_accumulator_threshold_records(mut self, threshold: usize) -> Self {
+        self.accumulator_threshold_records = Some(threshold);
+        self
+    }
+
     /// Validate the configuration.
     pub fn validate(&self) -> Result<(), String> {
         if self.thread_count == 0 {
@@ -101,6 +135,9 @@ impl WorkerConfig {
         }
         if self.channel_buffer == 0 {
             return Err("channel_buffer must be at least 1".to_string());
+        }
+        if self.accumulator_threshold_bytes == 0 {
+            return Err("accumulator_threshold_bytes must be at least 1".to_string());
         }
         Ok(())
     }
@@ -147,6 +184,8 @@ mod tests {
         assert_eq!(config.channel_buffer, 100);
         assert_eq!(config.max_retries, 3);
         assert_eq!(config.shutdown_timeout, Duration::from_secs(30));
+        assert_eq!(config.accumulator_threshold_bytes, DEFAULT_ACCUMULATOR_THRESHOLD_BYTES);
+        assert!(config.accumulator_threshold_records.is_none());
     }
 
     #[test]
@@ -157,7 +196,9 @@ mod tests {
             .with_channel_buffer(50)
             .with_max_retries(5)
             .with_region("eu-west-1")
-            .with_s3_endpoint("http://localhost:4566");
+            .with_s3_endpoint("http://localhost:4566")
+            .with_accumulator_threshold_bytes(15 * 1024 * 1024)
+            .with_accumulator_threshold_records(100_000);
 
         assert_eq!(config.thread_count, 8);
         assert_eq!(config.batch_size, 5000);
@@ -165,6 +206,8 @@ mod tests {
         assert_eq!(config.max_retries, 5);
         assert_eq!(config.region, "eu-west-1");
         assert_eq!(config.s3_endpoint, Some("http://localhost:4566".to_string()));
+        assert_eq!(config.accumulator_threshold_bytes, 15 * 1024 * 1024);
+        assert_eq!(config.accumulator_threshold_records, Some(100_000));
     }
 
     #[test]
@@ -179,6 +222,9 @@ mod tests {
         assert!(invalid.validate().is_err());
 
         let invalid = WorkerConfig::new().with_channel_buffer(0);
+        assert!(invalid.validate().is_err());
+
+        let invalid = WorkerConfig::new().with_accumulator_threshold_bytes(0);
         assert!(invalid.validate().is_err());
     }
 }
