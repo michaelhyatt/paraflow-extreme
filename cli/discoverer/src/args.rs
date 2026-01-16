@@ -6,6 +6,18 @@ use clap::{Parser, ValueEnum};
 ///
 /// Discovers files from S3 storage and outputs file information for processing.
 /// By default, outputs to stdout in JSONL format (one JSON object per line).
+///
+/// ## Examples
+///
+/// Basic usage:
+///   pf-discoverer -b my-bucket --pattern "*.parquet"
+///
+/// With partitioning:
+///   pf-discoverer -b my-bucket --partitioning "logs/${index}/${year}/" \
+///       --partition-filter "index=nginx" --partition-filter "year=2024,2025"
+///
+/// With size and date filters:
+///   pf-discoverer -b my-bucket --min-size 1024 --modified-after 2024-01-01
 #[derive(Parser, Debug)]
 #[command(name = "pf-discoverer")]
 #[command(version, about, long_about = None)]
@@ -52,6 +64,42 @@ pub struct Cli {
     #[arg(long, default_value = "0")]
     pub max_files: usize,
 
+    // === Partitioning Options ===
+    /// Partitioning expression (e.g., "logs/${index}/${year}/")
+    #[arg(long)]
+    pub partitioning: Option<String>,
+
+    /// Partition filter in format "field=value1,value2" (can be specified multiple times)
+    #[arg(long = "partition-filter")]
+    pub partition_filters: Vec<String>,
+
+    // === Size Filter Options ===
+    /// Minimum file size in bytes
+    #[arg(long)]
+    pub min_size: Option<u64>,
+
+    /// Maximum file size in bytes
+    #[arg(long)]
+    pub max_size: Option<u64>,
+
+    // === Date Filter Options ===
+    /// Only include files modified after this date (ISO 8601, date only, or relative like -24h)
+    #[arg(long)]
+    pub modified_after: Option<String>,
+
+    /// Only include files modified before this date
+    #[arg(long)]
+    pub modified_before: Option<String>,
+
+    // === Parallelism Options ===
+    /// Maximum concurrent S3 list operations
+    #[arg(long, default_value = "10")]
+    pub concurrency: usize,
+
+    /// Maximum parallel prefix discoveries
+    #[arg(long, default_value = "20")]
+    pub parallel_prefixes: usize,
+
     // === Output Options ===
     /// Output destination
     #[arg(long, value_enum, default_value = "stdout")]
@@ -68,6 +116,10 @@ pub struct Cli {
     /// Custom SQS endpoint URL (for LocalStack)
     #[arg(long, env = "PF_SQS_ENDPOINT")]
     pub sqs_endpoint: Option<String>,
+
+    /// SQS batch size (1-10)
+    #[arg(long, default_value = "10")]
+    pub sqs_batch_size: usize,
 
     // === Logging Options ===
     /// Log level

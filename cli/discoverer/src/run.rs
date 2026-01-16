@@ -2,9 +2,10 @@
 
 use anyhow::Result;
 use pf_discoverer::{
-    Discoverer, DiscoveryConfig, DiscoveryStats, Output, PatternFilter, S3Config, SqsConfig,
-    SqsOutput, StdoutOutput, create_s3_client,
+    CompositeFilter, DateFilter, Discoverer, DiscoveryConfig, DiscoveryStats, Filter, Output,
+    PatternFilter, S3Config, SizeFilter, SqsConfig, SqsOutput, StdoutOutput, create_s3_client,
 };
+use pf_discoverer::filter::parse_date;
 use tracing::Level;
 use tracing_subscriber::fmt;
 
@@ -26,7 +27,10 @@ pub fn init_logging(level: LogLevel) -> Result<()> {
 /// Execute the discoverer with the provided arguments.
 pub async fn execute(args: Cli) -> Result<DiscoveryStats> {
     // Build S3 configuration
-    let mut s3_config = S3Config::new(&args.bucket).with_region(&args.region);
+    let mut s3_config = S3Config::new(&args.bucket)
+        .with_region(&args.region)
+        .with_concurrency(args.concurrency)
+        .with_parallel_prefixes(args.parallel_prefixes);
 
     if let Some(prefix) = &args.prefix {
         s3_config = s3_config.with_prefix(prefix);
@@ -52,8 +56,8 @@ pub async fn execute(args: Cli) -> Result<DiscoveryStats> {
         .with_format(args.format.into())
         .with_max_files(args.max_files);
 
-    // Build pattern filter
-    let filter = PatternFilter::new(&args.pattern)?;
+    // Build composite filter
+    let filter = build_filter(&args)?;
 
     // Execute based on output type
     let stats = match args.output {
@@ -67,7 +71,9 @@ pub async fn execute(args: Cli) -> Result<DiscoveryStats> {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("--sqs-queue-url is required when output=sqs"))?;
 
-            let mut sqs_config = SqsConfig::new(sqs_queue_url).with_region(&args.region);
+            let mut sqs_config = SqsConfig::new(sqs_queue_url)
+                .with_region(&args.region)
+                .with_batch_size(args.sqs_batch_size);
 
             if let Some(endpoint) = &args.sqs_endpoint {
                 sqs_config = sqs_config.with_endpoint(endpoint);
@@ -81,12 +87,52 @@ pub async fn execute(args: Cli) -> Result<DiscoveryStats> {
     Ok(stats)
 }
 
-/// Run discovery with a specific output type.
-async fn run_discovery<O: Output>(
+/// Build the composite filter from CLI arguments.
+fn build_filter(args: &Cli) -> Result<CompositeFilter> {
+    let mut composite = CompositeFilter::new();
+
+    // Add pattern filter
+    let pattern_filter = PatternFilter::new(&args.pattern)
+        .map_err(|e| anyhow::anyhow!("Invalid pattern: {}", e))?;
+    composite.add_filter(Box::new(pattern_filter));
+
+    // Add size filter if specified
+    if args.min_size.is_some() || args.max_size.is_some() {
+        let mut size_filter = SizeFilter::new();
+        if let Some(min) = args.min_size {
+            size_filter = size_filter.with_min_size(min);
+        }
+        if let Some(max) = args.max_size {
+            size_filter = size_filter.with_max_size(max);
+        }
+        composite.add_filter(Box::new(size_filter));
+    }
+
+    // Add date filter if specified
+    if args.modified_after.is_some() || args.modified_before.is_some() {
+        let mut date_filter = DateFilter::new();
+        if let Some(after) = &args.modified_after {
+            let dt = parse_date(after)
+                .map_err(|e| anyhow::anyhow!("Invalid --modified-after: {}", e))?;
+            date_filter = date_filter.with_modified_after(dt);
+        }
+        if let Some(before) = &args.modified_before {
+            let dt = parse_date(before)
+                .map_err(|e| anyhow::anyhow!("Invalid --modified-before: {}", e))?;
+            date_filter = date_filter.with_modified_before(dt);
+        }
+        composite.add_filter(Box::new(date_filter));
+    }
+
+    Ok(composite)
+}
+
+/// Run discovery with a specific output and filter type.
+async fn run_discovery<O: Output, F: Filter>(
     s3_client: aws_sdk_s3::Client,
     args: &Cli,
     output: O,
-    filter: PatternFilter,
+    filter: F,
     config: DiscoveryConfig,
 ) -> Result<DiscoveryStats> {
     let discoverer = Discoverer::new(

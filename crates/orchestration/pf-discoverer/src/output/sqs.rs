@@ -5,6 +5,9 @@ use aws_config::BehaviorVersion;
 use aws_sdk_sqs::Client;
 use pf_error::{PfError, Result};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tracing::debug;
 
 use super::Output;
 use crate::DiscoveredFile;
@@ -29,6 +32,12 @@ pub struct SqsConfig {
 
     /// AWS profile name (optional)
     pub profile: Option<String>,
+
+    /// Batch size for SQS messages (max 10 per SQS API limit)
+    pub batch_size: usize,
+
+    /// Maximum buffer capacity for backpressure (0 = unlimited)
+    pub buffer_capacity: usize,
 }
 
 impl SqsConfig {
@@ -41,6 +50,8 @@ impl SqsConfig {
             access_key: None,
             secret_key: None,
             profile: None,
+            batch_size: 10, // SQS max
+            buffer_capacity: 100,
         }
     }
 
@@ -55,15 +66,30 @@ impl SqsConfig {
         self.region = Some(region.into());
         self
     }
+
+    /// Set the batch size (max 10).
+    pub fn with_batch_size(mut self, batch_size: usize) -> Self {
+        self.batch_size = batch_size.min(10); // SQS limit
+        self
+    }
+
+    /// Set the buffer capacity for backpressure.
+    pub fn with_buffer_capacity(mut self, capacity: usize) -> Self {
+        self.buffer_capacity = capacity;
+        self
+    }
 }
 
-/// SQS output implementation.
+/// SQS output implementation with batching support.
 ///
 /// Sends discovered files as JSON messages to an SQS queue.
-/// Supports LocalStack via custom endpoint configuration.
+/// Supports batching (up to 10 messages per request) and backpressure.
 pub struct SqsOutput {
     client: Client,
     queue_url: String,
+    batch_size: usize,
+    buffer_capacity: usize,
+    buffer: Arc<Mutex<Vec<DiscoveredFile>>>,
 }
 
 impl SqsOutput {
@@ -73,6 +99,9 @@ impl SqsOutput {
         Ok(Self {
             client,
             queue_url: config.queue_url,
+            batch_size: config.batch_size.min(10), // SQS max is 10
+            buffer_capacity: config.buffer_capacity,
+            buffer: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -81,30 +110,113 @@ impl SqsOutput {
         Self {
             client,
             queue_url: queue_url.into(),
+            batch_size: 10,
+            buffer_capacity: 100,
+            buffer: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Send a batch of messages to SQS.
+    async fn send_batch(&self, files: Vec<DiscoveredFile>) -> Result<()> {
+        if files.is_empty() {
+            return Ok(());
+        }
+
+        debug!(count = files.len(), "Sending SQS batch");
+
+        let mut entries = Vec::with_capacity(files.len());
+        for (i, file) in files.iter().enumerate() {
+            let body = serde_json::to_string(file)
+                .map_err(|e| PfError::Config(format!("JSON serialization failed: {e}")))?;
+
+            let entry = aws_sdk_sqs::types::SendMessageBatchRequestEntry::builder()
+                .id(format!("msg-{}", i))
+                .message_body(body)
+                .build()
+                .map_err(|e| PfError::Config(format!("Failed to build SQS entry: {e}")))?;
+
+            entries.push(entry);
+        }
+
+        let result = self
+            .client
+            .send_message_batch()
+            .queue_url(&self.queue_url)
+            .set_entries(Some(entries))
+            .send()
+            .await
+            .map_err(|e| PfError::Config(format!("Failed to send SQS batch: {e}")))?;
+
+        // Check for failures
+        let failed = result.failed();
+        if !failed.is_empty() {
+            let codes: Vec<_> = failed.iter().map(|f| f.code()).collect();
+            return Err(PfError::Config(format!(
+                "Some SQS messages failed: {:?}",
+                codes
+            )));
+        }
+
+        Ok(())
     }
 }
 
 #[async_trait]
 impl Output for SqsOutput {
     async fn output(&self, file: &DiscoveredFile) -> Result<()> {
-        let body = serde_json::to_string(file)
-            .map_err(|e| PfError::Config(format!("JSON serialization failed: {e}")))?;
+        let mut buffer = self.buffer.lock().await;
 
-        self.client
-            .send_message()
-            .queue_url(&self.queue_url)
-            .message_body(body)
-            .send()
-            .await
-            .map_err(|e| PfError::Config(format!("Failed to send SQS message: {e}")))?;
+        buffer.push(file.clone());
+
+        // Send batch if buffer is full
+        if buffer.len() >= self.batch_size {
+            let batch: Vec<DiscoveredFile> = buffer.drain(..).collect();
+            drop(buffer); // Release lock before sending
+            self.send_batch(batch).await?;
+        }
 
         Ok(())
     }
 
     async fn flush(&self) -> Result<()> {
-        // SQS sends are immediate, no buffering
-        Ok(())
+        let mut buffer = self.buffer.lock().await;
+
+        if buffer.is_empty() {
+            return Ok(());
+        }
+
+        let batch: Vec<DiscoveredFile> = buffer.drain(..).collect();
+        drop(buffer); // Release lock before sending
+        self.send_batch(batch).await
+    }
+
+    fn ready(&self) -> bool {
+        // This is a sync check, so we can't await
+        // For more accurate backpressure, use wait_ready()
+        if self.buffer_capacity == 0 {
+            return true;
+        }
+
+        // We can't check the buffer synchronously without blocking
+        // Return true and rely on wait_ready for actual backpressure
+        true
+    }
+
+    async fn wait_ready(&self) {
+        if self.buffer_capacity == 0 {
+            return;
+        }
+
+        loop {
+            let buffer = self.buffer.lock().await;
+            if buffer.len() < self.buffer_capacity {
+                return;
+            }
+            drop(buffer);
+
+            // Wait a bit before checking again
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
     }
 }
 
@@ -161,5 +273,21 @@ mod tests {
         );
         assert_eq!(config.endpoint, Some("http://localhost:4566".to_string()));
         assert_eq!(config.region, Some("us-east-1".to_string()));
+    }
+
+    #[test]
+    fn test_sqs_config_batch_size() {
+        let config = SqsConfig::new("test-queue").with_batch_size(5);
+        assert_eq!(config.batch_size, 5);
+
+        // Should cap at 10
+        let config = SqsConfig::new("test-queue").with_batch_size(20);
+        assert_eq!(config.batch_size, 10);
+    }
+
+    #[test]
+    fn test_sqs_config_buffer_capacity() {
+        let config = SqsConfig::new("test-queue").with_buffer_capacity(50);
+        assert_eq!(config.buffer_capacity, 50);
     }
 }

@@ -7,25 +7,26 @@ use tracing::{debug, warn};
 
 use crate::DiscoveredFile;
 use crate::config::DiscoveryConfig;
-use crate::filter::PatternFilter;
+use crate::filter::Filter;
 use crate::output::Output;
 use crate::s3::{S3Object, list_objects};
 use crate::stats::DiscoveryStats;
 
 /// The main discoverer that coordinates S3 listing, filtering, and output.
 ///
-/// Generic over the output type to allow different output destinations
-/// (stdout, SQS, etc.) with the same discovery logic.
-pub struct Discoverer<O: Output> {
+/// Generic over the output type and filter type to allow different output
+/// destinations (stdout, SQS, etc.) and filtering strategies with the same
+/// discovery logic.
+pub struct Discoverer<O: Output, F: Filter> {
     s3_client: Client,
     bucket: String,
     prefix: Option<String>,
     output: O,
-    filter: PatternFilter,
+    filter: F,
     config: DiscoveryConfig,
 }
 
-impl<O: Output> Discoverer<O> {
+impl<O: Output, F: Filter> Discoverer<O, F> {
     /// Create a new Discoverer.
     ///
     /// # Arguments
@@ -34,14 +35,14 @@ impl<O: Output> Discoverer<O> {
     /// * `bucket` - The bucket to discover files in
     /// * `prefix` - Optional prefix to filter objects
     /// * `output` - The output destination for discovered files
-    /// * `filter` - The pattern filter for matching files
+    /// * `filter` - The filter for matching files
     /// * `config` - The discovery configuration
     pub fn new(
         s3_client: Client,
         bucket: impl Into<String>,
         prefix: Option<String>,
         output: O,
-        filter: PatternFilter,
+        filter: F,
         config: DiscoveryConfig,
     ) -> Self {
         Self {
@@ -57,7 +58,7 @@ impl<O: Output> Discoverer<O> {
     /// Run the discovery process.
     ///
     /// Lists all objects in the configured S3 bucket/prefix, filters them
-    /// by the pattern, and outputs discovered files.
+    /// by the configured filter, and outputs discovered files.
     ///
     /// # Returns
     ///
@@ -68,7 +69,7 @@ impl<O: Output> Discoverer<O> {
         debug!(
             bucket = %self.bucket,
             prefix = ?self.prefix,
-            pattern = %self.filter.pattern(),
+            filter = %self.filter.description(),
             "Starting discovery"
         );
 
@@ -78,7 +79,7 @@ impl<O: Output> Discoverer<O> {
         while let Some(result) = stream.next().await {
             match result {
                 Ok(obj) => {
-                    if self.filter.matches(&obj.key) {
+                    if self.filter.matches(&obj) {
                         let discovered_file = self.create_discovered_file(&obj);
 
                         if let Err(e) = self.output.output(&discovered_file).await {
@@ -143,6 +144,7 @@ impl<O: Output> Discoverer<O> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::filter::PatternFilter;
     use crate::output::StdoutOutput;
     use pf_types::FileFormat;
 
@@ -185,7 +187,7 @@ mod tests {
         // In integration tests, we'd use LocalStack
 
         // Type check that everything composes correctly
-        fn _type_check<O: Output>(_output: O, _filter: PatternFilter, _config: DiscoveryConfig) {}
+        fn _type_check<O: Output, F: Filter>(_output: O, _filter: F, _config: DiscoveryConfig) {}
         _type_check(output, filter, config);
     }
 }

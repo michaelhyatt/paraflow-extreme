@@ -4,8 +4,10 @@
 //! and outputting file information. It supports:
 //!
 //! - S3 listing with pagination and LocalStack support
-//! - Glob pattern filtering for file selection
-//! - Output to stdout (JSONL/JSON) or SQS queues
+//! - Glob pattern filtering with composable multi-criteria filters
+//! - Partitioning expression support for efficient discovery
+//! - Parallel prefix discovery with backpressure
+//! - Output to stdout (JSONL/JSON) or SQS queues with batching
 //!
 //! # Example
 //!
@@ -48,14 +50,21 @@ pub mod config;
 pub mod discoverer;
 pub mod filter;
 pub mod output;
+pub mod partition;
 pub mod s3;
 pub mod stats;
 
 pub use config::DiscoveryConfig;
 pub use discoverer::Discoverer;
-pub use filter::{MatchAllFilter, PatternFilter};
+pub use filter::{
+    CompositeFilter, DateFilter, Filter, MatchAllFilter, MultiPatternFilter, PatternFilter,
+    SizeFilter,
+};
 pub use output::{Output, OutputFormat, SqsConfig, SqsOutput, StdoutOutput};
-pub use s3::{S3Config, S3Object, create_s3_client, list_objects};
+pub use s3::{
+    ParallelConfig, ParallelLister, RetryConfig, S3Config, S3Object, create_s3_client,
+    list_objects,
+};
 pub use stats::DiscoveryStats;
 
 /// A discovered file from S3.
