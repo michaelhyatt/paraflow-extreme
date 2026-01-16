@@ -7,10 +7,12 @@ use crate::source::{QueueMessage, WorkQueue};
 use crate::stats::{StatsSnapshot, WorkerStats};
 use pf_error::{ErrorCategory, Result};
 use pf_traits::{BatchIndexer, FailureContext, StreamingReader};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 /// High-throughput data processing worker.
@@ -61,6 +63,7 @@ impl<S: WorkQueue + 'static, R: StreamingReader + 'static> Worker<S, R> {
         info!(
             threads = self.config.thread_count,
             batch_size = self.config.batch_size,
+            shutdown_timeout_secs = self.config.shutdown_timeout.as_secs(),
             "Starting worker"
         );
 
@@ -70,6 +73,14 @@ impl<S: WorkQueue + 'static, R: StreamingReader + 'static> Worker<S, R> {
             self.config.channel_buffer,
         );
         let router = Arc::new(router);
+
+        // Create cancellation token for graceful shutdown
+        let cancellation_token = CancellationToken::new();
+
+        // Create worker status trackers
+        let worker_statuses: Vec<Arc<WorkerStatus>> = (0..self.config.thread_count)
+            .map(|id| Arc::new(WorkerStatus::new(id as u32)))
+            .collect();
 
         // Spawn worker threads
         let mut worker_handles: Vec<JoinHandle<()>> = Vec::new();
@@ -82,9 +93,11 @@ impl<S: WorkQueue + 'static, R: StreamingReader + 'static> Worker<S, R> {
             );
             let source = self.source.clone();
             let max_retries = self.config.max_retries;
+            let cancel_token = cancellation_token.child_token();
+            let status = worker_statuses[thread_id].clone();
 
             let handle = tokio::spawn(async move {
-                worker_thread(thread_id as u32, rx, pipeline, source, max_retries).await;
+                worker_thread(thread_id as u32, rx, pipeline, source, max_retries, cancel_token, status).await;
             });
             worker_handles.push(handle);
         }
@@ -92,8 +105,10 @@ impl<S: WorkQueue + 'static, R: StreamingReader + 'static> Worker<S, R> {
         // Run the receiver loop that fetches from source and routes to workers
         let receiver_result = self.run_receiver(router.clone()).await;
 
-        // Signal shutdown to the router
+        // Signal shutdown to the router (stops new work from being distributed)
         router.shutdown();
+
+        debug!("Router shutdown signaled, waiting for workers to complete");
 
         // Wait for all workers to complete with timeout
         let shutdown_result = tokio::time::timeout(
@@ -104,6 +119,7 @@ impl<S: WorkQueue + 'static, R: StreamingReader + 'static> Worker<S, R> {
 
         match shutdown_result {
             Ok(results) => {
+                debug!("All workers completed within shutdown timeout");
                 for (i, result) in results.into_iter().enumerate() {
                     if let Err(e) = result {
                         error!(thread = i, error = %e, "Worker thread panicked");
@@ -111,7 +127,37 @@ impl<S: WorkQueue + 'static, R: StreamingReader + 'static> Worker<S, R> {
                 }
             }
             Err(_) => {
-                warn!("Shutdown timeout exceeded, some workers may not have completed");
+                // Log which workers are still running
+                let still_running: Vec<_> = worker_statuses
+                    .iter()
+                    .filter(|s| s.is_processing())
+                    .collect();
+
+                if still_running.is_empty() {
+                    warn!(
+                        timeout_secs = self.config.shutdown_timeout.as_secs(),
+                        "Shutdown timeout exceeded, but no workers appear to be processing"
+                    );
+                } else {
+                    for status in &still_running {
+                        warn!(
+                            thread = status.thread_id,
+                            current_file = %status.current_file(),
+                            "Worker still processing at shutdown timeout"
+                        );
+                    }
+                    warn!(
+                        timeout_secs = self.config.shutdown_timeout.as_secs(),
+                        workers_still_running = still_running.len(),
+                        "Shutdown timeout exceeded, signaling cancellation to workers"
+                    );
+                }
+
+                // Signal cancellation to all workers
+                cancellation_token.cancel();
+
+                // Give workers a brief grace period to respond to cancellation
+                tokio::time::sleep(Duration::from_millis(500)).await;
             }
         }
 
@@ -195,55 +241,129 @@ impl<S: WorkQueue + 'static, R: StreamingReader + 'static> Worker<S, R> {
     }
 }
 
+/// Tracks the status of a worker thread for shutdown diagnostics.
+struct WorkerStatus {
+    /// Thread ID
+    thread_id: u32,
+    /// Whether the worker is currently processing a file
+    processing: AtomicBool,
+    /// Current file being processed (for diagnostics)
+    current_file: std::sync::Mutex<String>,
+}
+
+impl WorkerStatus {
+    fn new(thread_id: u32) -> Self {
+        Self {
+            thread_id,
+            processing: AtomicBool::new(false),
+            current_file: std::sync::Mutex::new(String::new()),
+        }
+    }
+
+    fn start_processing(&self, file_uri: &str) {
+        self.processing.store(true, Ordering::SeqCst);
+        if let Ok(mut guard) = self.current_file.lock() {
+            *guard = file_uri.to_string();
+        }
+    }
+
+    fn finish_processing(&self) {
+        self.processing.store(false, Ordering::SeqCst);
+        if let Ok(mut guard) = self.current_file.lock() {
+            guard.clear();
+        }
+    }
+
+    fn is_processing(&self) -> bool {
+        self.processing.load(Ordering::SeqCst)
+    }
+
+    fn current_file(&self) -> String {
+        self.current_file
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_else(|_| "<unknown>".to_string())
+    }
+}
+
 /// Worker thread that processes messages from a channel.
+///
+/// Supports graceful shutdown via cancellation token. When cancelled,
+/// the worker will finish processing its current message before exiting.
 async fn worker_thread<S: WorkQueue>(
     thread_id: u32,
     mut rx: mpsc::Receiver<QueueMessage>,
     pipeline: Pipeline,
     source: Arc<S>,
     max_retries: u32,
+    cancel_token: CancellationToken,
+    status: Arc<WorkerStatus>,
 ) {
     debug!(thread = thread_id, "Worker thread started");
 
-    while let Some(message) = rx.recv().await {
-        let receipt_handle = message.receipt_handle.clone();
-        let _receive_count = message.receive_count;
-        let _work_item = message.work_item.clone();
+    loop {
+        // Check for cancellation or new message
+        tokio::select! {
+            biased;
 
-        // Process the message
-        let result = pipeline.process(&message).await;
+            // Check for cancellation
+            _ = cancel_token.cancelled() => {
+                debug!(thread = thread_id, "Worker received cancellation signal");
+                break;
+            }
 
-        // Handle the result
-        match handle_result(&result, &message, max_retries) {
-            AckAction::Ack => {
-                if let Err(e) = source.ack(&receipt_handle).await {
-                    error!(
-                        thread = thread_id,
-                        message = %receipt_handle,
-                        error = %e,
-                        "Failed to ack message"
-                    );
-                }
-            }
-            AckAction::Retry(failure) => {
-                if let Err(e) = source.nack(&receipt_handle).await {
-                    error!(
-                        thread = thread_id,
-                        message = %receipt_handle,
-                        error = %e,
-                        "Failed to nack message for retry"
-                    );
-                }
-                drop(failure); // Failure context logged but not needed for simple nack
-            }
-            AckAction::Dlq(failure) => {
-                if let Err(e) = source.move_to_dlq(&receipt_handle, &failure).await {
-                    error!(
-                        thread = thread_id,
-                        message = %receipt_handle,
-                        error = %e,
-                        "Failed to move message to DLQ"
-                    );
+            // Wait for next message
+            message = rx.recv() => {
+                let Some(message) = message else {
+                    // Channel closed, exit normally
+                    break;
+                };
+
+                let receipt_handle = message.receipt_handle.clone();
+                let file_uri = message.work_item.file_uri.clone();
+
+                // Update status for shutdown diagnostics
+                status.start_processing(&file_uri);
+
+                // Process the message
+                let result = pipeline.process(&message).await;
+
+                // Mark processing complete
+                status.finish_processing();
+
+                // Handle the result
+                match handle_result(&result, &message, max_retries) {
+                    AckAction::Ack => {
+                        if let Err(e) = source.ack(&receipt_handle).await {
+                            error!(
+                                thread = thread_id,
+                                message = %receipt_handle,
+                                error = %e,
+                                "Failed to ack message"
+                            );
+                        }
+                    }
+                    AckAction::Retry(failure) => {
+                        if let Err(e) = source.nack(&receipt_handle).await {
+                            error!(
+                                thread = thread_id,
+                                message = %receipt_handle,
+                                error = %e,
+                                "Failed to nack message for retry"
+                            );
+                        }
+                        drop(failure); // Failure context logged but not needed for simple nack
+                    }
+                    AckAction::Dlq(failure) => {
+                        if let Err(e) = source.move_to_dlq(&receipt_handle, &failure).await {
+                            error!(
+                                thread = thread_id,
+                                message = %receipt_handle,
+                                error = %e,
+                                "Failed to move message to DLQ"
+                            );
+                        }
+                    }
                 }
             }
         }

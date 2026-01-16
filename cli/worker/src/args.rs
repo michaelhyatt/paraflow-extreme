@@ -88,6 +88,10 @@ pub struct Cli {
     #[arg(long, default_value = "100", value_parser = parse_positive_usize)]
     pub channel_buffer: usize,
 
+    /// Shutdown timeout in seconds (time to wait for workers to complete)
+    #[arg(long, default_value = "30", value_parser = clap::value_parser!(u64).range(1..))]
+    pub shutdown_timeout: u64,
+
     // === AWS Configuration ===
     /// AWS region
     #[arg(long, env = "AWS_REGION", default_value = "us-east-1")]
