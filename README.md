@@ -62,7 +62,7 @@ cargo run --package pf-discoverer-cli -- \
     --bucket test-bucket \
     --prefix data/ \
     --s3-endpoint http://localhost:4566 \
-    --output sqs \
+    --destination sqs \
     --sqs-queue-url http://localhost:4566/000000000000/work-queue \
     --sqs-endpoint http://localhost:4566
 
