@@ -1893,6 +1893,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8bb03732005da905c88227371639bf1ad885cc712789c011c31c5fb3ab3ccf02"
 
 [[package]]
+name = "integration-tests"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "async-trait",
+ "aws-config",
+ "aws-sdk-s3",
+ "aws-sdk-sqs",
+ "chrono",
+ "futures",
+ "parquet",
+ "pf-error",
+ "pf-traits",
+ "pf-types",
+ "pf-worker",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,38 @@
+[package]
+name = "integration-tests"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# This is a test-only package
+[[test]]
+name = "integration"
+path = "main.rs"
+
+[dependencies]
+# AWS SDK
+aws-config = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+aws-sdk-sqs = { workspace = true }
+
+# Async
+tokio = { workspace = true, features = ["full", "test-util"] }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# Arrow/Parquet
+arrow = { workspace = true }
+parquet = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Internal crates
+pf-types = { workspace = true }
+pf-traits = { workspace = true }
+pf-error = { workspace = true }
+pf-worker = { path = "../../crates/orchestration/pf-worker" }

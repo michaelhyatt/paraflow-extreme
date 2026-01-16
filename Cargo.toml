@@ -11,6 +11,7 @@ members = [
     "cli",
     "cli/discoverer",
     "cli/worker",
+    "tests/integration",
 ]
 
 [workspace.package]
