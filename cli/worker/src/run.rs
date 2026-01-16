@@ -75,7 +75,9 @@ pub async fn execute(args: Cli) -> Result<pf_worker::stats::StatsSnapshot> {
                 .ok_or_else(|| anyhow::anyhow!("--sqs-queue-url is required when input=sqs"))?;
 
             let sqs_config = SqsSourceConfig::new(queue_url)
-                .with_visibility_timeout(args.sqs_visibility_timeout);
+                .with_visibility_timeout(args.sqs_visibility_timeout)
+                .with_wait_time(args.sqs_wait_time)
+                .with_drain_mode(args.sqs_drain);
 
             let source = if let Some(ref endpoint) = args.sqs_endpoint {
                 SqsSource::from_config_with_endpoint(sqs_config, endpoint, &args.region).await?

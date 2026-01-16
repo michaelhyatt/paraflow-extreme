@@ -38,6 +38,14 @@ pub struct Cli {
     #[arg(long, default_value = "300")]
     pub sqs_visibility_timeout: i32,
 
+    /// SQS long-poll wait time in seconds (1-20)
+    #[arg(long, default_value = "20")]
+    pub sqs_wait_time: i32,
+
+    /// Drain mode: exit when queue is empty (for batch processing)
+    #[arg(long)]
+    pub sqs_drain: bool,
+
     // === Destination ===
     /// Output destination type
     #[arg(long, value_enum, default_value = "stdout")]

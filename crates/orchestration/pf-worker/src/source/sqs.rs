@@ -1,12 +1,11 @@
 //! SQS work source implementation.
 
-use super::{WorkAck, WorkMessage, WorkNack, WorkSource};
+use super::{parse_work_item, WorkAck, WorkMessage, WorkNack, WorkSource};
 use async_trait::async_trait;
 use aws_sdk_sqs::Client;
 use pf_error::{PfError, QueueError, Result};
-use pf_types::WorkItem;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use tracing::{debug, error, info, warn};
 
 /// Configuration for the SQS source.
@@ -26,6 +25,11 @@ pub struct SqsSourceConfig {
 
     /// Maximum number of messages to receive per batch (1-10)
     pub max_batch_size: i32,
+
+    /// Drain mode: exit when queue is empty (for batch processing).
+    /// When enabled, the source will signal completion after receiving
+    /// no messages for one full polling cycle.
+    pub drain_mode: bool,
 }
 
 impl SqsSourceConfig {
@@ -37,6 +41,7 @@ impl SqsSourceConfig {
             wait_time_seconds: 20,
             visibility_timeout: 300, // 5 minutes
             max_batch_size: 10,
+            drain_mode: false,
         }
     }
 
@@ -63,9 +68,27 @@ impl SqsSourceConfig {
         self.max_batch_size = size.clamp(1, 10);
         self
     }
+
+    /// Enable drain mode (exit when queue is empty).
+    pub fn with_drain_mode(mut self, enabled: bool) -> Self {
+        self.drain_mode = enabled;
+        self
+    }
 }
 
 /// Work source that receives WorkItems from an AWS SQS queue.
+///
+/// Supports two message formats:
+///
+/// 1. **Full WorkItem format** (for production use with complete configuration):
+///    ```json
+///    {"job_id":"job-1","file_uri":"s3://bucket/file.parquet","file_size_bytes":1024,...}
+///    ```
+///
+/// 2. **DiscoveredFile format** (from pf-discoverer):
+///    ```json
+///    {"uri":"s3://bucket/file.parquet","size_bytes":1024,"last_modified":"2024-01-01T00:00:00Z"}
+///    ```
 pub struct SqsSource {
     /// SQS client
     client: Client,
@@ -75,6 +98,9 @@ pub struct SqsSource {
 
     /// Whether to stop receiving (for graceful shutdown)
     stopped: AtomicBool,
+
+    /// Counter for consecutive empty receives (for drain mode)
+    empty_receive_count: AtomicU32,
 }
 
 impl SqsSource {
@@ -84,6 +110,7 @@ impl SqsSource {
             client,
             config,
             stopped: AtomicBool::new(false),
+            empty_receive_count: AtomicU32::new(0),
         }
     }
 
@@ -139,6 +166,24 @@ impl WorkSource for SqsSource {
         let sqs_messages = response.messages.unwrap_or_default();
         debug!("Received {} messages from SQS", sqs_messages.len());
 
+        // Handle drain mode: exit when queue is empty
+        if sqs_messages.is_empty() {
+            if self.config.drain_mode {
+                let count = self.empty_receive_count.fetch_add(1, Ordering::Relaxed) + 1;
+                debug!("Empty receive #{} in drain mode", count);
+                // After one empty long-poll, consider the queue drained
+                if count >= 1 {
+                    info!("Queue drained, signaling completion");
+                    self.stopped.store(true, Ordering::Relaxed);
+                    return Ok(None);
+                }
+            }
+            return Ok(Some(vec![]));
+        }
+
+        // Reset empty receive counter when we get messages
+        self.empty_receive_count.store(0, Ordering::Relaxed);
+
         let mut messages = Vec::with_capacity(sqs_messages.len());
 
         for msg in sqs_messages {
@@ -153,16 +198,17 @@ impl WorkSource for SqsSource {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(1);
 
-            match serde_json::from_str::<WorkItem>(&body) {
-                Ok(work_item) => {
+            // Try to parse as WorkItem or DiscoveredFile
+            match parse_work_item(&body) {
+                Some(work_item) => {
                     messages.push(WorkMessage {
                         id: receipt_handle,
                         work_item,
                         receive_count,
                     });
                 }
-                Err(e) => {
-                    error!("Failed to parse work item from SQS message: {}", e);
+                None => {
+                    error!("Failed to parse work item from SQS message: {}", body);
                     // Delete the malformed message to prevent infinite redelivery
                     if let Err(del_err) = self
                         .client

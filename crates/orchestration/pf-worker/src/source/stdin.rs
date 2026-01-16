@@ -1,93 +1,13 @@
 //! Stdin work source implementation.
 
-use super::{WorkAck, WorkMessage, WorkNack, WorkSource};
+use super::{parse_work_item, WorkAck, WorkMessage, WorkNack, WorkSource};
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use pf_error::{PfError, QueueError, Result};
-use pf_types::{DestinationConfig, FileFormat, WorkItem};
-use serde::Deserialize;
 use std::io::{self, BufRead, BufReader};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use tracing::{debug, trace, warn};
 use uuid::Uuid;
-
-/// A discovered file from pf-discoverer.
-///
-/// This is the simpler format output by `pf-discoverer` that can be
-/// piped directly to `pf-worker`.
-#[derive(Debug, Clone, Deserialize)]
-struct DiscoveredFile {
-    /// The S3 URI of the file (e.g., "s3://bucket/path/file.parquet")
-    uri: String,
-
-    /// Size of the file in bytes
-    size_bytes: u64,
-
-    /// Last modified timestamp (if available)
-    #[serde(default)]
-    last_modified: Option<DateTime<Utc>>,
-}
-
-impl DiscoveredFile {
-    /// Convert to a WorkItem with default configuration.
-    ///
-    /// Uses format detection based on file extension and placeholder
-    /// destination configuration.
-    fn into_work_item(self) -> WorkItem {
-        // Detect format from file extension
-        let format = guess_format_from_uri(&self.uri);
-
-        WorkItem {
-            job_id: "stdin".to_string(),
-            file_uri: self.uri,
-            file_size_bytes: self.size_bytes,
-            format,
-            destination: DestinationConfig {
-                endpoint: "".to_string(),
-                index: "".to_string(),
-                credentials: None,
-            },
-            transform: None,
-            attempt: 0,
-            enqueued_at: self.last_modified.unwrap_or_else(Utc::now),
-        }
-    }
-}
-
-/// Guess file format from URI extension.
-fn guess_format_from_uri(uri: &str) -> FileFormat {
-    let uri_lower = uri.to_lowercase();
-    if uri_lower.ends_with(".parquet") || uri_lower.ends_with(".pq") {
-        FileFormat::Parquet
-    } else if uri_lower.ends_with(".ndjson")
-        || uri_lower.ends_with(".jsonl")
-        || uri_lower.ends_with(".json")
-    {
-        FileFormat::NdJson
-    } else {
-        // Default to Parquet
-        FileFormat::Parquet
-    }
-}
-
-/// Parse a JSON line into a WorkItem.
-///
-/// Tries to parse as a full WorkItem first, then falls back to
-/// DiscoveredFile format (from pf-discoverer).
-fn parse_work_item(line: &str) -> Option<WorkItem> {
-    // Try full WorkItem format first
-    if let Ok(work_item) = serde_json::from_str::<WorkItem>(line) {
-        return Some(work_item);
-    }
-
-    // Fall back to DiscoveredFile format (pf-discoverer output)
-    if let Ok(discovered) = serde_json::from_str::<DiscoveredFile>(line) {
-        return Some(discovered.into_work_item());
-    }
-
-    None
-}
 
 /// Work source that reads JSONL work items from stdin.
 ///
@@ -352,7 +272,7 @@ mod tests {
         assert_eq!(messages[0].work_item.file_uri, "s3://bucket/file.parquet");
         assert_eq!(messages[0].work_item.file_size_bytes, 1024);
         assert_eq!(messages[0].work_item.format, FileFormat::Parquet);
-        assert_eq!(messages[0].work_item.job_id, "stdin");
+        assert_eq!(messages[0].work_item.job_id, "discovered");
     }
 
     #[tokio::test]
@@ -381,40 +301,9 @@ mod tests {
         // First is full WorkItem
         assert_eq!(messages[0].work_item.job_id, "test-job");
         // Second is converted DiscoveredFile
-        assert_eq!(messages[1].work_item.job_id, "stdin");
+        assert_eq!(messages[1].work_item.job_id, "discovered");
         assert_eq!(messages[1].work_item.file_uri, "s3://bucket/file2.parquet");
     }
 
-    #[test]
-    fn test_guess_format_from_uri() {
-        assert_eq!(guess_format_from_uri("s3://bucket/file.parquet"), FileFormat::Parquet);
-        assert_eq!(guess_format_from_uri("s3://bucket/file.pq"), FileFormat::Parquet);
-        assert_eq!(guess_format_from_uri("s3://bucket/file.ndjson"), FileFormat::NdJson);
-        assert_eq!(guess_format_from_uri("s3://bucket/file.jsonl"), FileFormat::NdJson);
-        assert_eq!(guess_format_from_uri("s3://bucket/file.json"), FileFormat::NdJson);
-        // Unknown extension defaults to Parquet
-        assert_eq!(guess_format_from_uri("s3://bucket/file.unknown"), FileFormat::Parquet);
-    }
-
-    #[test]
-    fn test_parse_work_item_full_format() {
-        let json = create_test_work_item_json();
-        let item = parse_work_item(&json).unwrap();
-        assert_eq!(item.job_id, "test-job");
-    }
-
-    #[test]
-    fn test_parse_work_item_discovered_format() {
-        let json = r#"{"uri":"s3://bucket/file.parquet","size_bytes":1024}"#;
-        let item = parse_work_item(json).unwrap();
-        assert_eq!(item.file_uri, "s3://bucket/file.parquet");
-        assert_eq!(item.file_size_bytes, 1024);
-        assert_eq!(item.job_id, "stdin");
-    }
-
-    #[test]
-    fn test_parse_work_item_invalid() {
-        assert!(parse_work_item("invalid json").is_none());
-        assert!(parse_work_item(r#"{"foo": "bar"}"#).is_none());
-    }
+    // Tests for parse_work_item and guess_format_from_uri moved to mod.rs
 }
