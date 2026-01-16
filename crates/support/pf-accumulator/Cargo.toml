@@ -1,0 +1,9 @@
+[package]
+name = "pf-accumulator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Placeholder for pf-accumulator"
+
+[dependencies]

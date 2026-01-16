@@ -1,0 +1,17 @@
+[package]
+name = "pf-traits"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Core traits for Paraflow Extreme: WorkQueue, StreamingReader, BatchIndexer, Transform"
+
+[dependencies]
+pf-types = { workspace = true }
+pf-error = { workspace = true }
+
+arrow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }

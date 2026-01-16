@@ -1,0 +1,11 @@
+[package]
+name = "pf-error"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Error types and classification for Paraflow Extreme"
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
