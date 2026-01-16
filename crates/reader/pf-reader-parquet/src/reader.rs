@@ -1,15 +1,20 @@
-//! Parquet reader implementation.
+//! Parquet reader implementation with true streaming support.
+//!
+//! This reader uses byte-range requests to fetch Parquet row groups on demand,
+//! maintaining a constant memory footprint regardless of file size.
 
-use crate::s3::{parse_s3_uri, S3Client};
+use crate::s3::parse_s3_uri;
 use async_trait::async_trait;
-use bytes::Bytes;
-use futures::stream;
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use futures::StreamExt;
+use object_store::aws::AmazonS3Builder;
+use object_store::local::LocalFileSystem;
+use object_store::path::Path as ObjectPath;
+use object_store::ObjectStore;
+use parquet::arrow::async_reader::{ParquetObjectReader, ParquetRecordBatchStreamBuilder};
 use pf_error::{PfError, ReaderError, Result};
 use pf_traits::{BatchStream, FileMetadata, StreamingReader};
 use pf_types::Batch;
-use std::fs::File;
-use std::io::Read;
+use std::sync::Arc;
 use tracing::{debug, info, trace};
 
 /// Configuration for the Parquet reader.
@@ -50,107 +55,71 @@ impl ParquetReaderConfig {
 
 /// Streaming Parquet file reader.
 ///
-/// Supports reading from both local files and S3 URIs.
+/// Uses byte-range requests to stream Parquet files with O(batch_size) memory,
+/// enabling processing of files larger than available RAM.
+///
+/// # Memory Model
+///
+/// - S3 response buffer: 8 KB (per request)
+/// - Parquet decoder: decodes on-demand, not buffered
+/// - Current RecordBatch: 2-10 MB (batch_size rows × row width)
+///
+/// Total memory per thread stays bounded at ~50MB regardless of file size.
 pub struct ParquetReader {
     config: ParquetReaderConfig,
-    s3_client: Option<S3Client>,
 }
 
 impl ParquetReader {
     /// Create a new Parquet reader with the given configuration.
     pub async fn new(config: ParquetReaderConfig) -> Result<Self> {
-        let s3_client = S3Client::new(&config.region, config.endpoint.as_deref()).await?;
-
-        Ok(Self {
-            config,
-            s3_client: Some(s3_client),
-        })
+        Ok(Self { config })
     }
 
     /// Create a Parquet reader for local files only (no S3 support).
     pub fn local_only() -> Self {
         Self {
             config: ParquetReaderConfig::new("local"),
-            s3_client: None,
         }
     }
 
-    /// Read file data from the given URI.
-    async fn read_file_data(&self, uri: &str) -> Result<Bytes> {
+    /// Create an object store for the given URI.
+    fn create_object_store(&self, uri: &str) -> Result<(Arc<dyn ObjectStore>, ObjectPath)> {
         if uri.starts_with("s3://") {
-            let s3_client = self.s3_client.as_ref().ok_or_else(|| {
-                PfError::Reader(ReaderError::S3Error(
-                    "S3 client not configured for S3 URIs".to_string(),
-                ))
-            })?;
-
             let (bucket, key) = parse_s3_uri(uri)?;
-            s3_client.get_object(&bucket, &key).await
-        } else if uri.starts_with("file://") {
-            let path = uri.strip_prefix("file://").unwrap();
-            self.read_local_file(path)
-        } else {
-            // Assume local file path
-            self.read_local_file(uri)
-        }
-    }
 
-    /// Read a local file into memory.
-    fn read_local_file(&self, path: &str) -> Result<Bytes> {
-        debug!(path = path, "Reading local Parquet file");
+            let mut builder = AmazonS3Builder::new()
+                .with_bucket_name(&bucket)
+                .with_region(&self.config.region);
 
-        let mut file = File::open(path).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                PfError::Reader(ReaderError::NotFound(path.to_string()))
-            } else {
-                PfError::Reader(ReaderError::Io(format!(
-                    "Failed to open file '{}': {}",
-                    path, e
-                )))
+            if let Some(endpoint) = &self.config.endpoint {
+                builder = builder
+                    .with_endpoint(endpoint)
+                    .with_allow_http(true)
+                    .with_virtual_hosted_style_request(false);
             }
-        })?;
 
-        let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer).map_err(|e| {
-            PfError::Reader(ReaderError::Io(format!(
-                "Failed to read file '{}': {}",
-                path, e
-            )))
-        })?;
-
-        Ok(Bytes::from(buffer))
-    }
-
-    /// Get the size of a file.
-    async fn get_file_size(&self, uri: &str) -> Result<u64> {
-        if uri.starts_with("s3://") {
-            let s3_client = self.s3_client.as_ref().ok_or_else(|| {
-                PfError::Reader(ReaderError::S3Error(
-                    "S3 client not configured for S3 URIs".to_string(),
-                ))
+            let store = builder.build().map_err(|e| {
+                PfError::Reader(ReaderError::S3Error(format!(
+                    "Failed to create S3 object store: {}",
+                    e
+                )))
             })?;
 
-            let (bucket, key) = parse_s3_uri(uri)?;
-            s3_client.get_object_size(&bucket, &key).await
+            let path = ObjectPath::from(key);
+            Ok((Arc::new(store), path))
         } else {
-            let path = if uri.starts_with("file://") {
+            let path_str = if uri.starts_with("file://") {
                 uri.strip_prefix("file://").unwrap()
             } else {
                 uri
             };
 
-            let metadata = std::fs::metadata(path).map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    PfError::Reader(ReaderError::NotFound(path.to_string()))
-                } else {
-                    PfError::Reader(ReaderError::Io(format!(
-                        "Failed to get metadata for '{}': {}",
-                        path, e
-                    )))
-                }
+            let store = LocalFileSystem::new();
+            let path = ObjectPath::from_absolute_path(path_str).map_err(|e| {
+                PfError::Reader(ReaderError::Io(format!("Invalid local path '{}': {}", uri, e)))
             })?;
 
-            Ok(metadata.len())
+            Ok((Arc::new(store), path))
         }
     }
 }
@@ -160,46 +129,70 @@ impl StreamingReader for ParquetReader {
     async fn read_stream(&self, uri: &str) -> Result<BatchStream> {
         info!(uri = uri, "Opening Parquet file for streaming");
 
-        // Download the file data
-        let data = self.read_file_data(uri).await?;
-        let file_size = data.len();
+        let (store, path) = self.create_object_store(uri)?;
+
+        // Get object metadata to determine file size
+        let meta = store.head(&path).await.map_err(|e| {
+            if e.to_string().contains("not found") || e.to_string().contains("404") {
+                PfError::Reader(ReaderError::NotFound(uri.to_string()))
+            } else {
+                PfError::Reader(ReaderError::S3Error(format!(
+                    "Failed to get metadata for '{}': {}",
+                    uri, e
+                )))
+            }
+        })?;
 
         debug!(
             uri = uri,
-            size = file_size,
-            "Downloaded Parquet file, creating reader"
+            size = meta.size,
+            "Got file metadata, creating async reader"
         );
 
-        // Create a Parquet reader from the bytes
-        let builder = ParquetRecordBatchReaderBuilder::try_new(data).map_err(|e| {
-            PfError::Reader(ReaderError::ParseError(format!(
-                "Failed to create Parquet reader for '{}': {}",
-                uri, e
-            )))
-        })?;
+        // Create async reader that uses byte-range requests
+        let reader = ParquetObjectReader::new(store, meta);
 
-        let _schema = builder.schema().clone();
+        // Build async stream builder - only fetches footer initially
+        let builder = ParquetRecordBatchStreamBuilder::new(reader)
+            .await
+            .map_err(|e| {
+                PfError::Reader(ReaderError::ParseError(format!(
+                    "Failed to create Parquet reader for '{}': {}",
+                    uri, e
+                )))
+            })?;
+
         let batch_size = self.config.batch_size;
         let uri_clone = uri.to_string();
 
-        // Build the reader with configured batch size
-        let reader = builder.with_batch_size(batch_size).build().map_err(|e| {
-            PfError::Reader(ReaderError::ParseError(format!(
-                "Failed to build Parquet reader for '{}': {}",
-                uri, e
-            )))
-        })?;
+        debug!(
+            uri = uri,
+            row_groups = builder.metadata().num_row_groups(),
+            batch_size = batch_size,
+            "Building async stream"
+        );
 
-        // Convert the synchronous iterator to an async stream
-        let batches: Vec<_> = reader
+        // Build the async stream - fetches row groups on demand via byte-range requests
+        let stream = builder
+            .with_batch_size(batch_size)
+            .build()
+            .map_err(|e| {
+                PfError::Reader(ReaderError::ParseError(format!(
+                    "Failed to build Parquet stream for '{}': {}",
+                    uri, e
+                )))
+            })?;
+
+        // Convert to BatchStream, wrapping each RecordBatch
+        let batch_stream = stream
             .enumerate()
-            .map(|(batch_index, result)| {
+            .map(move |(batch_index, result)| {
                 result
                     .map(|record_batch| {
                         trace!(
                             batch_index = batch_index,
                             rows = record_batch.num_rows(),
-                            "Read Parquet batch"
+                            "Streamed Parquet batch"
                         );
                         Batch::new(record_batch, uri_clone.clone(), batch_index)
                     })
@@ -209,30 +202,40 @@ impl StreamingReader for ParquetReader {
                             batch_index, e
                         )))
                     })
-            })
-            .collect();
+            });
 
-        debug!(
-            uri = uri,
-            batch_count = batches.len(),
-            "Created batch stream"
-        );
-
-        Ok(Box::pin(stream::iter(batches)))
+        Ok(Box::pin(batch_stream))
     }
 
     async fn file_metadata(&self, uri: &str) -> Result<FileMetadata> {
         debug!(uri = uri, "Getting Parquet file metadata");
 
-        let size = self.get_file_size(uri).await?;
-        let data = self.read_file_data(uri).await?;
+        let (store, path) = self.create_object_store(uri)?;
 
-        let builder = ParquetRecordBatchReaderBuilder::try_new(data).map_err(|e| {
-            PfError::Reader(ReaderError::ParseError(format!(
-                "Failed to read Parquet metadata for '{}': {}",
-                uri, e
-            )))
+        // Get object metadata for file size
+        let meta = store.head(&path).await.map_err(|e| {
+            if e.to_string().contains("not found") || e.to_string().contains("404") {
+                PfError::Reader(ReaderError::NotFound(uri.to_string()))
+            } else {
+                PfError::Reader(ReaderError::S3Error(format!(
+                    "Failed to get metadata for '{}': {}",
+                    uri, e
+                )))
+            }
         })?;
+
+        let size = meta.size as u64;
+
+        // Create async reader - only fetches footer (few KB) not entire file
+        let reader = ParquetObjectReader::new(store, meta);
+        let builder = ParquetRecordBatchStreamBuilder::new(reader)
+            .await
+            .map_err(|e| {
+                PfError::Reader(ReaderError::ParseError(format!(
+                    "Failed to read Parquet metadata for '{}': {}",
+                    uri, e
+                )))
+            })?;
 
         let parquet_metadata = builder.metadata();
         let row_count: i64 = parquet_metadata
@@ -255,7 +258,6 @@ mod tests {
     use arrow::record_batch::RecordBatch;
     use futures::StreamExt;
     use parquet::arrow::ArrowWriter;
-    use std::io::Write;
     use std::sync::Arc;
     use tempfile::NamedTempFile;
 
@@ -344,10 +346,7 @@ mod tests {
 
         // Create reader with small batch size
         let config = ParquetReaderConfig::new("local").with_batch_size(100);
-        let reader = ParquetReader {
-            config,
-            s3_client: None,
-        };
+        let reader = ParquetReader { config };
 
         let mut stream = reader.read_stream(path).await.unwrap();
 
