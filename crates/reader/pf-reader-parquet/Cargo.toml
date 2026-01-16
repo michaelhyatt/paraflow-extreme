@@ -21,9 +21,8 @@ tokio = { workspace = true, features = ["fs", "io-util"] }
 async-trait = { workspace = true }
 futures = { workspace = true }
 
-# AWS
-aws-sdk-s3 = { workspace = true }
-aws-config = { workspace = true }
+# Object Store (S3 streaming via byte-range requests)
+object_store = { workspace = true }
 
 # Other
 tracing = { workspace = true }
