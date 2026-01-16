@@ -2,6 +2,7 @@
 
 use crate::source::WorkMessage;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Mutex;
 use tokio::sync::mpsc;
 use tracing::{debug, trace};
 
@@ -9,8 +10,11 @@ use tracing::{debug, trace};
 ///
 /// Uses bounded channels to provide backpressure when workers are busy.
 pub struct WorkRouter {
-    /// Senders for each worker thread
-    senders: Vec<mpsc::Sender<WorkMessage>>,
+    /// Senders for each worker thread (wrapped in Option for shutdown)
+    senders: Mutex<Vec<Option<mpsc::Sender<WorkMessage>>>>,
+
+    /// Number of workers
+    num_workers: usize,
 
     /// Round-robin counter for distribution
     next_worker: AtomicUsize,
@@ -27,12 +31,13 @@ impl WorkRouter {
 
         for _ in 0..num_workers {
             let (tx, rx) = mpsc::channel(buffer_size);
-            senders.push(tx);
+            senders.push(Some(tx));
             receivers.push(rx);
         }
 
         let router = Self {
-            senders,
+            senders: Mutex::new(senders),
+            num_workers,
             next_worker: AtomicUsize::new(0),
             shutdown: AtomicBool::new(false),
         };
@@ -50,8 +55,17 @@ impl WorkRouter {
         }
 
         // Round-robin selection
-        let worker_idx = self.next_worker.fetch_add(1, Ordering::Relaxed) % self.senders.len();
-        let sender = &self.senders[worker_idx];
+        let worker_idx = self.next_worker.fetch_add(1, Ordering::Relaxed) % self.num_workers;
+
+        // Get a clone of the sender (if it exists)
+        let sender = {
+            let senders = self.senders.lock().unwrap();
+            senders[worker_idx].clone()
+        };
+
+        let Some(sender) = sender else {
+            return Err(message);
+        };
 
         trace!(
             worker = worker_idx,
@@ -83,10 +97,19 @@ impl WorkRouter {
 
     /// Signal shutdown to all workers.
     ///
-    /// After calling this, `route` will return errors for new messages.
+    /// This drops all channel senders, causing worker threads to exit
+    /// when their receivers return `None`. After calling this, `route`
+    /// will return errors for new messages.
     pub fn shutdown(&self) {
         self.shutdown.store(true, Ordering::Relaxed);
-        debug!("Work router shutdown signaled");
+
+        // Drop all senders to signal workers to exit
+        let mut senders = self.senders.lock().unwrap();
+        for sender in senders.iter_mut() {
+            *sender = None;
+        }
+
+        debug!("Work router shutdown signaled, channels closed");
     }
 
     /// Check if the router is shutdown.
@@ -96,7 +119,7 @@ impl WorkRouter {
 
     /// Get the number of workers.
     pub fn num_workers(&self) -> usize {
-        self.senders.len()
+        self.num_workers
     }
 }
 
