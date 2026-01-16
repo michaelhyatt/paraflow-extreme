@@ -1,6 +1,6 @@
 //! Reader factory for creating file readers based on format.
 
-use pf_error::{PfError, ReaderError, Result};
+use pf_error::Result;
 use pf_reader_ndjson::{NdjsonReader, NdjsonReaderConfig};
 use pf_reader_parquet::{ParquetReader, ParquetReaderConfig};
 use pf_traits::StreamingReader;

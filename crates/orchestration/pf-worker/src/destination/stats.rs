@@ -6,7 +6,7 @@ use pf_error::Result;
 use pf_traits::{BatchIndexer, IndexResult};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// Destination that counts records and tracks metrics without outputting data.
 ///

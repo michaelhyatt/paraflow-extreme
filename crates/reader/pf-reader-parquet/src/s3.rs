@@ -87,6 +87,7 @@ impl S3Client {
     }
 
     /// Download a byte range of an object.
+    #[allow(dead_code)]
     pub async fn get_object_range(
         &self,
         bucket: &str,

@@ -1,7 +1,7 @@
 //! Per-thread statistics tracking.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Per-thread statistics for tracking processing within a single thread.
 #[derive(Debug, Default)]

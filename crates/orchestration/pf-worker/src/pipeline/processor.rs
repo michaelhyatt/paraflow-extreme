@@ -5,7 +5,7 @@ use crate::source::WorkMessage;
 use crate::stats::WorkerStats;
 use arrow::record_batch::RecordBatch;
 use futures::StreamExt;
-use pf_error::{classify_error, ErrorCategory, PfError, ProcessingStage, Result};
+use pf_error::{classify_error, ErrorCategory, PfError, ProcessingStage};
 use pf_traits::{BatchIndexer, BatchStream, StreamingReader};
 use pf_types::WorkItem;
 use std::sync::Arc;
@@ -297,6 +297,7 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use chrono::Utc;
     use futures::stream;
+    use pf_error::Result;
     use pf_traits::FileMetadata;
     use pf_types::{Batch, DestinationConfig, FileFormat};
 

@@ -209,8 +209,8 @@ async fn worker_thread<S: WorkSource>(
 
     while let Some(message) = rx.recv().await {
         let message_id = message.id.clone();
-        let receive_count = message.receive_count;
-        let work_item = message.work_item.clone();
+        let _receive_count = message.receive_count;
+        let _work_item = message.work_item.clone();
 
         // Process the message
         let result = pipeline.process(&message).await;

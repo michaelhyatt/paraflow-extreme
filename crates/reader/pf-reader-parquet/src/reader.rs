@@ -10,7 +10,6 @@ use pf_traits::{BatchStream, FileMetadata, StreamingReader};
 use pf_types::Batch;
 use std::fs::File;
 use std::io::Read;
-use std::sync::Arc;
 use tracing::{debug, info, trace};
 
 /// Configuration for the Parquet reader.
@@ -179,7 +178,7 @@ impl StreamingReader for ParquetReader {
             )))
         })?;
 
-        let schema = builder.schema().clone();
+        let _schema = builder.schema().clone();
         let batch_size = self.config.batch_size;
         let uri_clone = uri.to_string();
 
@@ -257,6 +256,7 @@ mod tests {
     use futures::StreamExt;
     use parquet::arrow::ArrowWriter;
     use std::io::Write;
+    use std::sync::Arc;
     use tempfile::NamedTempFile;
 
     fn create_test_parquet_file(num_rows: usize) -> NamedTempFile {

@@ -2,25 +2,108 @@
 
 use super::{WorkAck, WorkMessage, WorkNack, WorkSource};
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use pf_error::{PfError, QueueError, Result};
-use pf_types::WorkItem;
+use pf_types::{DestinationConfig, FileFormat, WorkItem};
+use serde::Deserialize;
 use std::io::{self, BufRead, BufReader};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use tracing::{debug, trace, warn};
 use uuid::Uuid;
 
-/// Work source that reads JSONL WorkItems from stdin.
+/// A discovered file from pf-discoverer.
 ///
-/// Each line should be a valid JSON object representing a WorkItem.
+/// This is the simpler format output by `pf-discoverer` that can be
+/// piped directly to `pf-worker`.
+#[derive(Debug, Clone, Deserialize)]
+struct DiscoveredFile {
+    /// The S3 URI of the file (e.g., "s3://bucket/path/file.parquet")
+    uri: String,
+
+    /// Size of the file in bytes
+    size_bytes: u64,
+
+    /// Last modified timestamp (if available)
+    #[serde(default)]
+    last_modified: Option<DateTime<Utc>>,
+}
+
+impl DiscoveredFile {
+    /// Convert to a WorkItem with default configuration.
+    ///
+    /// Uses format detection based on file extension and placeholder
+    /// destination configuration.
+    fn into_work_item(self) -> WorkItem {
+        // Detect format from file extension
+        let format = guess_format_from_uri(&self.uri);
+
+        WorkItem {
+            job_id: "stdin".to_string(),
+            file_uri: self.uri,
+            file_size_bytes: self.size_bytes,
+            format,
+            destination: DestinationConfig {
+                endpoint: "".to_string(),
+                index: "".to_string(),
+                credentials: None,
+            },
+            transform: None,
+            attempt: 0,
+            enqueued_at: self.last_modified.unwrap_or_else(Utc::now),
+        }
+    }
+}
+
+/// Guess file format from URI extension.
+fn guess_format_from_uri(uri: &str) -> FileFormat {
+    let uri_lower = uri.to_lowercase();
+    if uri_lower.ends_with(".parquet") || uri_lower.ends_with(".pq") {
+        FileFormat::Parquet
+    } else if uri_lower.ends_with(".ndjson")
+        || uri_lower.ends_with(".jsonl")
+        || uri_lower.ends_with(".json")
+    {
+        FileFormat::NdJson
+    } else {
+        // Default to Parquet
+        FileFormat::Parquet
+    }
+}
+
+/// Parse a JSON line into a WorkItem.
+///
+/// Tries to parse as a full WorkItem first, then falls back to
+/// DiscoveredFile format (from pf-discoverer).
+fn parse_work_item(line: &str) -> Option<WorkItem> {
+    // Try full WorkItem format first
+    if let Ok(work_item) = serde_json::from_str::<WorkItem>(line) {
+        return Some(work_item);
+    }
+
+    // Fall back to DiscoveredFile format (pf-discoverer output)
+    if let Ok(discovered) = serde_json::from_str::<DiscoveredFile>(line) {
+        return Some(discovered.into_work_item());
+    }
+
+    None
+}
+
+/// Work source that reads JSONL work items from stdin.
+///
+/// Supports two input formats:
+///
+/// 1. **Full WorkItem format** (for production use with complete configuration):
+///    ```jsonl
+///    {"job_id":"job-1","file_uri":"s3://bucket/file.parquet","file_size_bytes":1024,...}
+///    ```
+///
+/// 2. **DiscoveredFile format** (from pf-discoverer, for local testing):
+///    ```jsonl
+///    {"uri":"s3://bucket/file.parquet","size_bytes":1024,"last_modified":"2024-01-01T00:00:00Z"}
+///    ```
+///
 /// Empty lines are skipped.
-///
-/// # Example Input
-///
-/// ```jsonl
-/// {"job_id":"job-1","file_uri":"s3://bucket/file1.parquet",...}
-/// {"job_id":"job-1","file_uri":"s3://bucket/file2.parquet",...}
-/// ```
 pub struct StdinSource {
     /// Reader for stdin (wrapped in Mutex for thread-safe access)
     reader: Mutex<Box<dyn BufRead + Send>>,
@@ -93,16 +176,16 @@ impl WorkSource for StdinSource {
 
                     trace!("Read line from stdin: {}", line);
 
-                    match serde_json::from_str::<WorkItem>(line) {
-                        Ok(work_item) => {
+                    match parse_work_item(line) {
+                        Some(work_item) => {
                             messages.push(WorkMessage {
                                 id: self.next_message_id(),
                                 work_item,
                                 receive_count: 1,
                             });
                         }
-                        Err(e) => {
-                            warn!("Failed to parse work item from stdin: {}", e);
+                        None => {
+                            warn!("Failed to parse work item from stdin: {}", line);
                             // Skip invalid lines and continue
                         }
                     }
@@ -255,5 +338,83 @@ mod tests {
         };
         let failure = pf_traits::FailureContext::new(item, "test", "test error", "test");
         source.nack(&[WorkNack::retry("test-id", failure)]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_stdin_source_discovered_file_format() {
+        // Format output by pf-discoverer
+        let json = r#"{"uri":"s3://bucket/file.parquet","size_bytes":1024,"last_modified":"2024-01-01T00:00:00Z"}"#;
+        let input = Cursor::new(format!("{}\n", json));
+        let source = StdinSource::with_reader(Box::new(input));
+
+        let messages = source.receive(10).await.unwrap().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].work_item.file_uri, "s3://bucket/file.parquet");
+        assert_eq!(messages[0].work_item.file_size_bytes, 1024);
+        assert_eq!(messages[0].work_item.format, FileFormat::Parquet);
+        assert_eq!(messages[0].work_item.job_id, "stdin");
+    }
+
+    #[tokio::test]
+    async fn test_stdin_source_discovered_file_ndjson_format() {
+        // Format output by pf-discoverer for NDJSON file
+        let json = r#"{"uri":"s3://bucket/data.ndjson","size_bytes":2048}"#;
+        let input = Cursor::new(format!("{}\n", json));
+        let source = StdinSource::with_reader(Box::new(input));
+
+        let messages = source.receive(10).await.unwrap().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].work_item.file_uri, "s3://bucket/data.ndjson");
+        assert_eq!(messages[0].work_item.format, FileFormat::NdJson);
+    }
+
+    #[tokio::test]
+    async fn test_stdin_source_mixed_formats() {
+        // Mix of full WorkItem and DiscoveredFile formats
+        let work_item_json = create_test_work_item_json();
+        let discovered_json = r#"{"uri":"s3://bucket/file2.parquet","size_bytes":512}"#;
+        let input = Cursor::new(format!("{}\n{}\n", work_item_json, discovered_json));
+        let source = StdinSource::with_reader(Box::new(input));
+
+        let messages = source.receive(10).await.unwrap().unwrap();
+        assert_eq!(messages.len(), 2);
+        // First is full WorkItem
+        assert_eq!(messages[0].work_item.job_id, "test-job");
+        // Second is converted DiscoveredFile
+        assert_eq!(messages[1].work_item.job_id, "stdin");
+        assert_eq!(messages[1].work_item.file_uri, "s3://bucket/file2.parquet");
+    }
+
+    #[test]
+    fn test_guess_format_from_uri() {
+        assert_eq!(guess_format_from_uri("s3://bucket/file.parquet"), FileFormat::Parquet);
+        assert_eq!(guess_format_from_uri("s3://bucket/file.pq"), FileFormat::Parquet);
+        assert_eq!(guess_format_from_uri("s3://bucket/file.ndjson"), FileFormat::NdJson);
+        assert_eq!(guess_format_from_uri("s3://bucket/file.jsonl"), FileFormat::NdJson);
+        assert_eq!(guess_format_from_uri("s3://bucket/file.json"), FileFormat::NdJson);
+        // Unknown extension defaults to Parquet
+        assert_eq!(guess_format_from_uri("s3://bucket/file.unknown"), FileFormat::Parquet);
+    }
+
+    #[test]
+    fn test_parse_work_item_full_format() {
+        let json = create_test_work_item_json();
+        let item = parse_work_item(&json).unwrap();
+        assert_eq!(item.job_id, "test-job");
+    }
+
+    #[test]
+    fn test_parse_work_item_discovered_format() {
+        let json = r#"{"uri":"s3://bucket/file.parquet","size_bytes":1024}"#;
+        let item = parse_work_item(json).unwrap();
+        assert_eq!(item.file_uri, "s3://bucket/file.parquet");
+        assert_eq!(item.file_size_bytes, 1024);
+        assert_eq!(item.job_id, "stdin");
+    }
+
+    #[test]
+    fn test_parse_work_item_invalid() {
+        assert!(parse_work_item("invalid json").is_none());
+        assert!(parse_work_item(r#"{"foo": "bar"}"#).is_none());
     }
 }
