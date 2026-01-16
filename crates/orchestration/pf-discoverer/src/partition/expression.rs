@@ -1,12 +1,65 @@
 //! Partitioning expression parsing and prefix generation.
 //!
 //! Parses expressions like `logs/${index}/${year}/` and generates S3 prefixes
-//! based on filter constraints.
+//! based on filter constraints. Also supports time-based partitioning with
+//! `${_time:%Y}`, `${_time:%m}`, `${_time:%d}` format specifiers.
 
+use chrono::NaiveDate;
 use pf_error::{PfError, Result};
 use std::collections::HashMap;
 
 use super::filter::PartitionFilters;
+
+/// A strftime format specifier for time-based path segments.
+///
+/// Used to format dates in partitioning expressions.
+///
+/// # Example
+///
+/// ```
+/// use pf_discoverer::partition::TimeFormatSpec;
+/// use chrono::NaiveDate;
+///
+/// let spec = TimeFormatSpec::new("%Y");
+/// let date = NaiveDate::from_ymd_opt(2022, 1, 15).unwrap();
+/// assert_eq!(spec.format_date(&date), "2022");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimeFormatSpec {
+    /// The strftime format string (e.g., "%Y", "%m", "%d")
+    format: String,
+}
+
+impl TimeFormatSpec {
+    /// Create a new time format specifier.
+    ///
+    /// # Arguments
+    ///
+    /// * `format` - The strftime format string
+    pub fn new(format: impl Into<String>) -> Self {
+        Self {
+            format: format.into(),
+        }
+    }
+
+    /// Format a date using this specifier.
+    ///
+    /// # Arguments
+    ///
+    /// * `date` - The date to format
+    ///
+    /// # Returns
+    ///
+    /// The formatted date string.
+    pub fn format_date(&self, date: &NaiveDate) -> String {
+        date.format(&self.format).to_string()
+    }
+
+    /// Get the format string.
+    pub fn format(&self) -> &str {
+        &self.format
+    }
+}
 
 /// A segment of a partitioning path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,6 +68,8 @@ pub enum PathSegment {
     Static(String),
     /// A variable path component (e.g., "index" from "${index}")
     Variable(String),
+    /// A time format specifier (e.g., "%Y" from "${_time:%Y}")
+    TimeFormat(TimeFormatSpec),
 }
 
 /// Result of prefix generation from a partitioning expression.
@@ -113,24 +168,38 @@ impl PartitioningExpression {
                     )));
                 }
 
-                let var_name: String = chars[start..end].iter().collect();
-                let var_name = var_name.trim();
+                let var_content: String = chars[start..end].iter().collect();
+                let var_content = var_content.trim();
 
-                if var_name.is_empty() {
+                if var_content.is_empty() {
                     return Err(PfError::Config(format!(
                         "Empty variable name in expression: {}",
                         expr
                     )));
                 }
 
-                if !is_valid_variable_name(var_name) {
-                    return Err(PfError::Config(format!(
-                        "Invalid variable name '{}' in expression: {}",
-                        var_name, expr
-                    )));
+                // Check for time format specifier: _time:%Y, _time:%m, etc.
+                if var_content.starts_with("_time:") {
+                    let format_spec = var_content
+                        .strip_prefix("_time:")
+                        .expect("checked prefix above");
+                    if format_spec.is_empty() {
+                        return Err(PfError::Config(format!(
+                            "Empty format specifier for _time in expression: {}",
+                            expr
+                        )));
+                    }
+                    segments.push(PathSegment::TimeFormat(TimeFormatSpec::new(format_spec)));
+                } else {
+                    // Regular variable
+                    if !is_valid_variable_name(var_content) {
+                        return Err(PfError::Config(format!(
+                            "Invalid variable name '{}' in expression: {}",
+                            var_content, expr
+                        )));
+                    }
+                    segments.push(PathSegment::Variable(var_content.to_string()));
                 }
-
-                segments.push(PathSegment::Variable(var_name.to_string()));
                 current_pos = end + 1;
             } else if chars[current_pos] == '/' {
                 // Skip path separator
@@ -167,7 +236,7 @@ impl PartitioningExpression {
             .iter()
             .filter_map(|s| match s {
                 PathSegment::Variable(name) => Some(name.as_str()),
-                PathSegment::Static(_) => None,
+                PathSegment::Static(_) | PathSegment::TimeFormat(_) => None,
             })
             .collect()
     }
@@ -185,6 +254,13 @@ impl PartitioningExpression {
     /// Get the original expression string.
     pub fn original(&self) -> &str {
         &self.original
+    }
+
+    /// Check if the expression contains any time format specifiers.
+    pub fn has_time_formats(&self) -> bool {
+        self.segments
+            .iter()
+            .any(|s| matches!(s, PathSegment::TimeFormat(_)))
     }
 
     /// Generate S3 prefixes based on the provided filters.
@@ -286,6 +362,11 @@ impl PartitioningExpression {
                     }
                     var_count += 1;
                 }
+                PathSegment::TimeFormat(_) => {
+                    // TimeFormat segments require expand_all_prefixes() from time.rs
+                    // which handles date iteration. Stop here for partial prefix generation.
+                    break;
+                }
             }
         }
 
@@ -342,6 +423,11 @@ impl PartitioningExpression {
                     vec![]
                 }
             }
+            PathSegment::TimeFormat(_) => {
+                // TimeFormat segments are handled by expand_all_prefixes() in time.rs
+                // This method doesn't support time-based prefix generation
+                vec![]
+            }
         }
     }
 
@@ -350,18 +436,33 @@ impl PartitioningExpression {
         let parts: Vec<&str> = key.trim_end_matches('/').split('/').collect();
         let mut segment_idx = 0;
         let mut part_idx = 0;
+        let mut part_offset = 0; // Offset within current part for partial matching
 
         while segment_idx < self.segments.len() && part_idx < parts.len() {
+            let part = parts[part_idx];
+            let remaining = &part[part_offset..];
+
             match &self.segments[segment_idx] {
                 PathSegment::Static(text) => {
-                    if parts[part_idx] != text {
-                        return false;
+                    if text.ends_with('=') {
+                        // This is a prefix like "YEAR=" - check if part starts with it
+                        if !remaining.starts_with(text.as_str()) {
+                            return false;
+                        }
+                        part_offset += text.len();
+                    } else {
+                        // Full path component - must match exactly
+                        if remaining != text {
+                            return false;
+                        }
+                        part_idx += 1;
+                        part_offset = 0;
                     }
-                    part_idx += 1;
                 }
-                PathSegment::Variable(_) => {
-                    // Any value matches a variable
+                PathSegment::Variable(_) | PathSegment::TimeFormat(_) => {
+                    // Variable or time format consumes the rest of the current part
                     part_idx += 1;
+                    part_offset = 0;
                 }
             }
             segment_idx += 1;
@@ -374,23 +475,45 @@ impl PartitioningExpression {
     /// Extract variable values from a matching key.
     ///
     /// Returns `None` if the key doesn't match the expression.
+    /// Note: TimeFormat segments are skipped (they don't produce named values).
     pub fn extract_values(&self, key: &str) -> Option<HashMap<String, String>> {
         let parts: Vec<&str> = key.trim_end_matches('/').split('/').collect();
         let mut segment_idx = 0;
         let mut part_idx = 0;
+        let mut part_offset = 0; // Offset within current part for partial matching
         let mut values = HashMap::new();
 
         while segment_idx < self.segments.len() && part_idx < parts.len() {
+            let part = parts[part_idx];
+            let remaining = &part[part_offset..];
+
             match &self.segments[segment_idx] {
                 PathSegment::Static(text) => {
-                    if parts[part_idx] != text {
-                        return None;
+                    if text.ends_with('=') {
+                        // This is a prefix like "YEAR=" - check if part starts with it
+                        if !remaining.starts_with(text.as_str()) {
+                            return None;
+                        }
+                        part_offset += text.len();
+                    } else {
+                        // Full path component - must match exactly
+                        if remaining != text {
+                            return None;
+                        }
+                        part_idx += 1;
+                        part_offset = 0;
                     }
-                    part_idx += 1;
                 }
                 PathSegment::Variable(name) => {
-                    values.insert(name.clone(), parts[part_idx].to_string());
+                    // Extract the remaining part of the current path component as the value
+                    values.insert(name.clone(), remaining.to_string());
                     part_idx += 1;
+                    part_offset = 0;
+                }
+                PathSegment::TimeFormat(_) => {
+                    // Time format segments match but don't extract named values
+                    part_idx += 1;
+                    part_offset = 0;
                 }
             }
             segment_idx += 1;
@@ -593,5 +716,86 @@ mod tests {
         assert!(!is_valid_variable_name("123foo"));
         assert!(!is_valid_variable_name("foo-bar"));
         assert!(!is_valid_variable_name(""));
+    }
+
+    // TimeFormatSpec tests
+
+    #[test]
+    fn test_time_format_spec_new() {
+        let spec = TimeFormatSpec::new("%Y");
+        assert_eq!(spec.format(), "%Y");
+    }
+
+    #[test]
+    fn test_time_format_spec_format_date() {
+        let date = NaiveDate::from_ymd_opt(2022, 1, 15).unwrap();
+
+        assert_eq!(TimeFormatSpec::new("%Y").format_date(&date), "2022");
+        assert_eq!(TimeFormatSpec::new("%m").format_date(&date), "01");
+        assert_eq!(TimeFormatSpec::new("%d").format_date(&date), "15");
+        assert_eq!(TimeFormatSpec::new("%Y-%m-%d").format_date(&date), "2022-01-15");
+    }
+
+    // Time format parsing tests
+
+    #[test]
+    fn test_parse_time_format_expression() {
+        let expr = PartitioningExpression::parse("data/YEAR=${_time:%Y}/MONTH=${_time:%m}/").unwrap();
+
+        assert!(expr.has_time_formats());
+        assert!(expr.variables().is_empty()); // _time formats are not regular variables
+
+        let segments = expr.segments();
+        assert_eq!(segments.len(), 5);
+        assert!(matches!(segments[0], PathSegment::Static(ref s) if s == "data"));
+        assert!(matches!(segments[1], PathSegment::Static(ref s) if s == "YEAR="));
+        assert!(matches!(segments[2], PathSegment::TimeFormat(ref spec) if spec.format() == "%Y"));
+        assert!(matches!(segments[3], PathSegment::Static(ref s) if s == "MONTH="));
+        assert!(matches!(segments[4], PathSegment::TimeFormat(ref spec) if spec.format() == "%m"));
+    }
+
+    #[test]
+    fn test_parse_mixed_expression() {
+        let expr = PartitioningExpression::parse(
+            "data/${region}/YEAR=${_time:%Y}/MONTH=${_time:%m}/${element}/"
+        ).unwrap();
+
+        assert!(expr.has_time_formats());
+        assert_eq!(expr.variables(), vec!["region", "element"]);
+    }
+
+    #[test]
+    fn test_parse_time_format_empty_specifier() {
+        assert!(PartitioningExpression::parse("data/${_time:}/").is_err());
+    }
+
+    #[test]
+    fn test_parse_expression_no_time_formats() {
+        let expr = PartitioningExpression::parse("data/${region}/${year}/").unwrap();
+        assert!(!expr.has_time_formats());
+    }
+
+    #[test]
+    fn test_matches_with_time_format() {
+        let expr = PartitioningExpression::parse("data/YEAR=${_time:%Y}/MONTH=${_time:%m}/").unwrap();
+
+        assert!(expr.matches("data/YEAR=2022/MONTH=01/"));
+        assert!(expr.matches("data/YEAR=2022/MONTH=01/file.parquet"));
+        assert!(!expr.matches("data/YEAR=2022/"));
+        assert!(!expr.matches("other/YEAR=2022/MONTH=01/"));
+    }
+
+    #[test]
+    fn test_extract_values_with_time_format() {
+        let expr = PartitioningExpression::parse(
+            "data/${region}/YEAR=${_time:%Y}/${element}/"
+        ).unwrap();
+
+        let values = expr.extract_values("data/us-east/YEAR=2022/cpu/file.parquet").unwrap();
+
+        // Should extract region and element, but not time format
+        assert_eq!(values.get("region"), Some(&"us-east".to_string()));
+        assert_eq!(values.get("element"), Some(&"cpu".to_string()));
+        assert_eq!(values.len(), 2);
     }
 }

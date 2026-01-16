@@ -16,6 +16,7 @@ clap = { workspace = true }
 
 # Async
 tokio = { workspace = true }
+futures = { workspace = true }
 
 # AWS
 aws-sdk-s3 = { workspace = true }

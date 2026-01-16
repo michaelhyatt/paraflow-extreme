@@ -14,7 +14,13 @@ use clap::{Parser, ValueEnum};
 ///
 /// With partitioning:
 ///   pf-discoverer -b my-bucket --partitioning "logs/${index}/${year}/" \
-///       --partition-filter "index=nginx" --partition-filter "year=2024,2025"
+///       -f "index=nginx" -f "year=2024,2025"
+///
+/// With time-based partitioning:
+///   pf-discoverer -b my-bucket \
+///       --partitioning "data/YEAR=${_time:%Y}/MONTH=${_time:%m}/${element}/" \
+///       -f "_time=2022-01-01..2022-01-05" \
+///       -f "element=cpu,memory"
 ///
 /// With size and date filters:
 ///   pf-discoverer -b my-bucket --min-size 1024 --modified-after 2024-01-01
@@ -62,12 +68,22 @@ pub struct Cli {
 
     // === Partitioning Options ===
     /// Partitioning expression (e.g., "logs/${index}/${year}/")
+    ///
+    /// Supports time format specifiers: ${_time:%Y}, ${_time:%m}, ${_time:%d}
     #[arg(long)]
     pub partitioning: Option<String>,
 
-    /// Partition filter in format "field=value1,value2" (can be specified multiple times)
-    #[arg(long = "partition-filter")]
-    pub partition_filters: Vec<String>,
+    /// Partition filter (can be specified multiple times)
+    ///
+    /// Supports two formats:
+    /// - Value filter: "field=value1,value2" (e.g., "index=nginx,apache")
+    /// - Date range: "_time=YYYY-MM-DD..YYYY-MM-DD" (e.g., "_time=2022-01-01..2022-01-05")
+    ///
+    /// Date ranges work with ${_time:FORMAT} specifiers in partitioning expressions.
+    /// Prefixes are automatically deduplicated when partition granularity is coarser
+    /// than the date range.
+    #[arg(long = "filter", short = 'f')]
+    pub filters: Vec<String>,
 
     // === Size Filter Options ===
     /// Minimum file size in bytes
