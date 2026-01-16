@@ -24,47 +24,42 @@ async fn main() -> anyhow::Result<()> {
     // Report results to stderr
     eprintln!();
     eprintln!("Worker completed:");
-    eprintln!("  Files processed: {}", stats.files_processed);
-    eprintln!("  Files failed:    {}", stats.files_failed);
-    eprintln!(
-        "  Records processed: {}",
-        format_number(stats.records_processed)
-    );
-    eprintln!(
-        "  Records failed:    {}",
-        format_number(stats.records_failed)
-    );
-    eprintln!("  Bytes read:      {}", format_bytes(stats.bytes_read));
-    eprintln!("  Bytes written:   {}", format_bytes(stats.bytes_written));
+    eprintln!("  Files processed:    {}", format_number(stats.files_processed as u64));
+    eprintln!("  Files failed:       {}", format_number(stats.files_failed as u64));
+    eprintln!("  Records processed:  {}", format_number(stats.records_processed));
+    eprintln!("  Records failed:     {}", format_number(stats.records_failed));
+    eprintln!("  Bytes read:         {}", format_bytes(stats.bytes_read));
+    eprintln!("  Bytes written:      {}", format_bytes(stats.bytes_written));
 
     if let Some(duration) = stats.duration() {
         let secs = duration.num_milliseconds() as f64 / 1000.0;
-        eprintln!("  Duration:        {:.2}s", secs);
+        eprintln!("  Duration:           {:.2}s", secs);
 
         if secs > 0.0 && stats.files_processed > 0 {
             eprintln!(
-                "  Throughput:      {:.1} files/sec",
+                "  Throughput:         {:.1} files/sec",
                 stats.files_processed as f64 / secs
             );
         }
 
         if secs > 0.0 && stats.records_processed > 0 {
             eprintln!(
-                "                   {} records/sec",
+                "                      {} records/sec",
                 format_number((stats.records_processed as f64 / secs) as u64)
             );
         }
 
         if secs > 0.0 && stats.bytes_read > 0 {
             let throughput_mbps = (stats.bytes_read as f64 / 1_000_000.0) / secs;
-            eprintln!("                   {:.1} MB/s read", throughput_mbps);
+            eprintln!("                      {:.1} MB/s read", throughput_mbps);
         }
     }
 
     if stats.transient_errors > 0 || stats.permanent_errors > 0 {
         eprintln!(
-            "  Errors:          {} transient, {} permanent",
-            stats.transient_errors, stats.permanent_errors
+            "  Errors:             {} transient, {} permanent",
+            format_number(stats.transient_errors as u64),
+            format_number(stats.permanent_errors as u64)
         );
     }
 

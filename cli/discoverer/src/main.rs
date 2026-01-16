@@ -3,7 +3,7 @@
 //! S3 file discovery for paraflow-extreme.
 
 use clap::Parser;
-use pf_cli_common::format_bytes;
+use pf_cli_common::{format_bytes, format_number};
 
 mod args;
 mod progress;
@@ -24,23 +24,18 @@ async fn main() -> anyhow::Result<()> {
     // Report results to stderr
     eprintln!();
     eprintln!("Discovery completed:");
-    eprintln!("  Files discovered: {}", stats.files_discovered);
-    eprintln!("  Files filtered:   {}", stats.files_filtered);
-    eprintln!("  Files output:     {}", stats.files_output);
-    eprintln!(
-        "  Bytes discovered: {}",
-        format_bytes(stats.bytes_discovered)
-    );
-    eprintln!("  Errors:           {}", stats.errors.len());
+    eprintln!("  Files discovered:   {}", format_number(stats.files_discovered as u64));
+    eprintln!("  Files filtered:     {}", format_number(stats.files_filtered as u64));
+    eprintln!("  Files output:       {}", format_number(stats.files_output as u64));
+    eprintln!("  Bytes discovered:   {}", format_bytes(stats.bytes_discovered));
+    eprintln!("  Errors:             {}", format_number(stats.errors.len() as u64));
 
     if let Some(duration) = stats.duration() {
-        eprintln!(
-            "  Duration:         {:.2}s",
-            duration.num_milliseconds() as f64 / 1000.0
-        );
+        let secs = duration.num_milliseconds() as f64 / 1000.0;
+        eprintln!("  Duration:           {:.2}s", secs);
 
         if let Some(fps) = stats.files_per_second() {
-            eprintln!("  Throughput:       {:.1} files/sec", fps);
+            eprintln!("  Throughput:         {:.1} files/sec", fps);
         }
     }
 
