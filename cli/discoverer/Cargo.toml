@@ -1,0 +1,33 @@
+[package]
+name = "pf-discoverer-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "CLI for pf-discoverer - S3 file discovery for paraflow-extreme"
+
+[[bin]]
+name = "pf-discoverer"
+path = "src/main.rs"
+
+[dependencies]
+# CLI
+clap = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+
+# AWS
+aws-sdk-s3 = { workspace = true }
+
+# Internal
+pf-types = { workspace = true }
+pf-error = { workspace = true }
+pf-discoverer = { path = "../../crates/orchestration/pf-discoverer" }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }

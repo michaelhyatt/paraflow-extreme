@@ -207,12 +207,7 @@ mod tests {
     #[test]
     fn test_failure_context_creation() {
         let item = create_test_work_item();
-        let ctx = FailureContext::new(
-            item,
-            "Permanent",
-            "File not found",
-            "S3Download",
-        );
+        let ctx = FailureContext::new(item, "Permanent", "File not found", "S3Download");
 
         assert_eq!(ctx.error_type, "Permanent");
         assert_eq!(ctx.stage, "S3Download");

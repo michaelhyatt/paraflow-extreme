@@ -169,8 +169,8 @@ mod tests {
             RecordFailure::new(10, "strict_dynamic_mapping", "field not allowed"),
         ];
 
-        let result = IndexResult::success(98, 1024, Duration::from_millis(50))
-            .with_failures(failures);
+        let result =
+            IndexResult::success(98, 1024, Duration::from_millis(50)).with_failures(failures);
 
         assert_eq!(result.success_count, 98);
         assert_eq!(result.total_count(), 100);

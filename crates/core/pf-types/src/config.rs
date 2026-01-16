@@ -234,7 +234,9 @@ visibility_timeout_secs: 300
     fn test_memory_queue_default() {
         let config = QueueConfig::default();
         match config {
-            QueueConfig::Memory { visibility_timeout_secs } => {
+            QueueConfig::Memory {
+                visibility_timeout_secs,
+            } => {
                 assert_eq!(visibility_timeout_secs, 300);
             }
             _ => panic!("Expected Memory config"),

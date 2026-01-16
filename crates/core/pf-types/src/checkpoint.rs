@@ -197,7 +197,10 @@ mod tests {
             cp.add_failed_record(record);
         }
 
-        assert_eq!(cp.failed_records.len(), ProcessingCheckpoint::MAX_FAILED_RECORDS);
+        assert_eq!(
+            cp.failed_records.len(),
+            ProcessingCheckpoint::MAX_FAILED_RECORDS
+        );
         assert!(cp.failed_records_truncated);
     }
 }
