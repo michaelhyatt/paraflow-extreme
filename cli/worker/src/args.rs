@@ -39,7 +39,7 @@ pub struct Cli {
     pub sqs_visibility_timeout: i32,
 
     /// SQS long-poll wait time in seconds (1-20)
-    #[arg(long, default_value = "20")]
+    #[arg(long, default_value = "20", value_parser = parse_sqs_wait_time)]
     pub sqs_wait_time: i32,
 
     /// Drain mode: exit when queue is empty (for batch processing)
@@ -56,20 +56,20 @@ pub struct Cli {
     pub output_format: OutputFormat,
 
     // === Processing ===
-    /// Number of processing threads
-    #[arg(long, default_value_t = num_cpus())]
+    /// Number of processing threads (must be >= 1)
+    #[arg(long, default_value_t = num_cpus(), value_parser = parse_positive_usize)]
     pub threads: usize,
 
-    /// Batch size for reading files
-    #[arg(long, default_value = "10000")]
+    /// Batch size for reading files (must be >= 1)
+    #[arg(long, default_value = "10000", value_parser = parse_positive_usize)]
     pub batch_size: usize,
 
     /// Maximum retries before moving to DLQ
     #[arg(long, default_value = "3")]
     pub max_retries: u32,
 
-    /// Channel buffer size for work distribution
-    #[arg(long, default_value = "100")]
+    /// Channel buffer size for work distribution (must be >= 1)
+    #[arg(long, default_value = "100", value_parser = parse_positive_usize)]
     pub channel_buffer: usize,
 
     // === S3 Configuration ===
@@ -80,6 +80,15 @@ pub struct Cli {
     /// Custom S3 endpoint URL (for LocalStack)
     #[arg(long, env = "PF_S3_ENDPOINT")]
     pub s3_endpoint: Option<String>,
+
+    // === Progress Options ===
+    /// Enable progress reporting to stderr
+    #[arg(long)]
+    pub progress: bool,
+
+    /// Progress reporting interval in seconds
+    #[arg(long, default_value = "5", value_parser = clap::value_parser!(u64).range(1..))]
+    pub progress_interval: u64,
 
     // === Logging ===
     /// Log level
@@ -155,4 +164,26 @@ fn num_cpus() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1)
+}
+
+/// Parse a positive usize (>= 1).
+fn parse_positive_usize(s: &str) -> Result<usize, String> {
+    let value: usize = s
+        .parse()
+        .map_err(|_| format!("'{}' is not a valid number", s))?;
+    if value < 1 {
+        return Err(format!("{} is not in 1..", value));
+    }
+    Ok(value)
+}
+
+/// Parse SQS wait time (1-20 seconds).
+fn parse_sqs_wait_time(s: &str) -> Result<i32, String> {
+    let value: i32 = s
+        .parse()
+        .map_err(|_| format!("'{}' is not a valid number", s))?;
+    if !(1..=20).contains(&value) {
+        return Err(format!("{} is not in 1..=20", value));
+    }
+    Ok(value)
 }

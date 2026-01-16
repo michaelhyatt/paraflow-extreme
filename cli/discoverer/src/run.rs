@@ -12,7 +12,8 @@ use pf_discoverer::partition::{PartitionFilters, PartitioningExpression, expand_
 use tracing::{Level, debug, info, warn};
 use tracing_subscriber::fmt;
 
-use crate::args::{Cli, LogLevel, OutputType};
+use crate::args::{Cli, DestinationType, LogLevel};
+use crate::progress::ProgressReporter;
 
 /// Initialize logging.
 pub fn init_logging(level: LogLevel) -> Result<()> {
@@ -64,17 +65,17 @@ pub async fn execute(args: Cli) -> Result<DiscoveryStats> {
     // Build partition configuration (prefixes to scan)
     let prefixes = build_partition_config(&args)?;
 
-    // Execute based on output type
-    let stats = match args.output {
-        OutputType::Stdout => {
+    // Execute based on destination type
+    let stats = match args.destination {
+        DestinationType::Stdout => {
             let output = StdoutOutput::new(args.output_format.into());
             run_discovery_with_prefixes(s3_client, &args, output, filter, config, prefixes).await?
         }
-        OutputType::Sqs => {
+        DestinationType::Sqs => {
             let sqs_queue_url = args
                 .sqs_queue_url
                 .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("--sqs-queue-url is required when output=sqs"))?;
+                .ok_or_else(|| anyhow::anyhow!("--sqs-queue-url is required when destination=sqs"))?;
 
             let mut sqs_config = SqsConfig::new(sqs_queue_url)
                 .with_region(&args.region)
@@ -198,6 +199,10 @@ async fn run_discovery_with_prefixes<O: Output, F: Filter>(
     let mut stats = DiscoveryStats::new();
     let max_files = config.max_files;
 
+    // Start progress reporter if enabled
+    let mut progress = ProgressReporter::new(args.progress, args.progress_interval);
+    progress.start();
+
     debug!(
         bucket = %args.bucket,
         prefix_count = prefixes.len(),
@@ -230,9 +235,11 @@ async fn run_discovery_with_prefixes<O: Output, F: Filter>(
                     }
 
                     stats.record_output(obj.size);
+                    progress.record_output(obj.size);
                     debug!(key = %obj.key, size = obj.size, "Discovered file");
                 } else {
                     stats.record_filtered();
+                    progress.record_filtered();
                 }
             }
             Err(e) => {
@@ -241,6 +248,9 @@ async fn run_discovery_with_prefixes<O: Output, F: Filter>(
             }
         }
     }
+
+    // Stop progress reporter
+    progress.stop().await;
 
     // Flush any buffered output
     output.flush().await?;

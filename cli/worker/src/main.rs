@@ -5,6 +5,7 @@
 use clap::Parser;
 
 mod args;
+mod progress;
 mod run;
 
 use args::Cli;

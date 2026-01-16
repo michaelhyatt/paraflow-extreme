@@ -28,7 +28,7 @@ pub enum PfError {
     Transform(#[from] TransformError),
 
     /// Configuration errors
-    #[error("Configuration error: {0}")]
+    #[error("{0}")]
     Config(String),
 
     /// Generic errors (wrapped anyhow)
