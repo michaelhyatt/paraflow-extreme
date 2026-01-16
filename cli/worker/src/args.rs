@@ -73,7 +73,7 @@ pub struct Cli {
     #[arg(long, default_value = "100", value_parser = parse_positive_usize)]
     pub channel_buffer: usize,
 
-    // === S3 Configuration ===
+    // === AWS Configuration ===
     /// AWS region
     #[arg(long, env = "AWS_REGION", default_value = "us-east-1")]
     pub region: String,
@@ -81,6 +81,18 @@ pub struct Cli {
     /// Custom S3 endpoint URL (for LocalStack)
     #[arg(long, env = "PF_S3_ENDPOINT")]
     pub s3_endpoint: Option<String>,
+
+    /// AWS access key ID
+    #[arg(long, env = "AWS_ACCESS_KEY_ID")]
+    pub access_key: Option<String>,
+
+    /// AWS secret access key
+    #[arg(long, env = "AWS_SECRET_ACCESS_KEY")]
+    pub secret_key: Option<String>,
+
+    /// AWS profile name
+    #[arg(long, env = "AWS_PROFILE")]
+    pub profile: Option<String>,
 
     // === Progress Options ===
     /// Enable progress reporting to stderr

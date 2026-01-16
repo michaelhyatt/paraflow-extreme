@@ -42,6 +42,7 @@ pub struct Cli {
     #[arg(long, env = "PF_S3_ENDPOINT")]
     pub s3_endpoint: Option<String>,
 
+    // === AWS Configuration ===
     /// AWS region
     #[arg(long, env = "AWS_REGION", default_value = "us-east-1")]
     pub region: String,
