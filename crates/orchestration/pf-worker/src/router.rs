@@ -1,7 +1,7 @@
 //! Work router for distributing work items to thread pool.
 
-use crate::source::WorkMessage;
 use futures::future::join_all;
+use pf_traits::QueueMessage;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use tokio::sync::mpsc;
@@ -12,7 +12,7 @@ use tracing::{debug, trace};
 /// Uses bounded channels to provide backpressure when workers are busy.
 pub struct WorkRouter {
     /// Senders for each worker thread (wrapped in Option for shutdown)
-    senders: Mutex<Vec<Option<mpsc::Sender<WorkMessage>>>>,
+    senders: Mutex<Vec<Option<mpsc::Sender<QueueMessage>>>>,
 
     /// Number of workers
     num_workers: usize,
@@ -26,7 +26,7 @@ pub struct WorkRouter {
 
 impl WorkRouter {
     /// Create a new work router with the specified number of workers and buffer size.
-    pub fn new(num_workers: usize, buffer_size: usize) -> (Self, Vec<mpsc::Receiver<WorkMessage>>) {
+    pub fn new(num_workers: usize, buffer_size: usize) -> (Self, Vec<mpsc::Receiver<QueueMessage>>) {
         let mut senders = Vec::with_capacity(num_workers);
         let mut receivers = Vec::with_capacity(num_workers);
 
@@ -50,7 +50,7 @@ impl WorkRouter {
     ///
     /// Returns `Ok(())` if the message was sent successfully.
     /// Returns `Err(message)` if the router is shutdown or all channels are closed.
-    pub async fn route(&self, message: WorkMessage) -> Result<(), WorkMessage> {
+    pub async fn route(&self, message: QueueMessage) -> Result<(), QueueMessage> {
         if self.shutdown.load(Ordering::Relaxed) {
             return Err(message);
         }
@@ -70,7 +70,7 @@ impl WorkRouter {
 
         trace!(
             worker = worker_idx,
-            message_id = %message.id,
+            message_id = %message.receipt_handle,
             "Routing message to worker"
         );
 
@@ -81,7 +81,7 @@ impl WorkRouter {
     ///
     /// Uses parallel routing to avoid head-of-line blocking when one worker's
     /// channel is full. Returns the messages that could not be routed.
-    pub async fn route_batch(&self, messages: Vec<WorkMessage>) -> Vec<WorkMessage> {
+    pub async fn route_batch(&self, messages: Vec<QueueMessage>) -> Vec<QueueMessage> {
         if messages.is_empty() {
             return Vec::new();
         }
@@ -134,9 +134,9 @@ mod tests {
     use chrono::Utc;
     use pf_types::{DestinationConfig, FileFormat, WorkItem};
 
-    fn create_test_message(id: &str) -> WorkMessage {
-        WorkMessage {
-            id: id.to_string(),
+    fn create_test_message(id: &str) -> QueueMessage {
+        QueueMessage {
+            receipt_handle: id.to_string(),
             work_item: WorkItem {
                 job_id: "test-job".to_string(),
                 file_uri: format!("s3://bucket/{}.parquet", id),
@@ -152,6 +152,7 @@ mod tests {
                 enqueued_at: Utc::now(),
             },
             receive_count: 1,
+            first_received_at: Utc::now(),
         }
     }
 

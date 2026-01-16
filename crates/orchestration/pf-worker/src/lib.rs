@@ -44,6 +44,6 @@ pub use destination::{create_destination, DestinationType, StatsDestination, Std
 pub use pipeline::{Pipeline, ThreadStats};
 pub use reader::{create_reader, FormatDispatchReader, ReaderFactory, ReaderFactoryConfig};
 pub use router::WorkRouter;
-pub use source::{SqsSource, SqsSourceConfig, StdinSource, WorkMessage, WorkSource};
+pub use source::{SqsSource, SqsSourceConfig, StdinSource, QueueMessage, WorkQueue};
 pub use stats::WorkerStats;
 pub use worker::Worker;

@@ -42,5 +42,8 @@ uuid = { workspace = true }
 # Error handling
 anyhow = { workspace = true }
 
+# Encoding
+base64 = "0.22"
+
 [dev-dependencies]
 tokio-test = "0.4"

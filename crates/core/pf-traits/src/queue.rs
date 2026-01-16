@@ -8,9 +8,14 @@ use serde::{Deserialize, Serialize};
 
 /// Trait for work queue backends.
 ///
+/// This is the unified abstraction for work queue operations used by both:
+/// - Discoverer: enqueues work items to the queue
+/// - Worker: receives and processes work items from the queue
+///
 /// Implementations include:
 /// - In-memory queue (for testing/development)
 /// - AWS SQS queue (production)
+/// - Stdin source (for local testing/piping)
 ///
 /// # Message Flow
 ///
@@ -20,10 +25,26 @@ use serde::{Deserialize, Serialize};
 ///    - [`ack`](WorkQueue::ack) on success
 ///    - [`nack`](WorkQueue::nack) on transient failure (retry)
 ///    - [`move_to_dlq`](WorkQueue::move_to_dlq) on permanent failure
+///
+/// # Optional Methods
+///
+/// Some methods have default implementations that return errors, allowing
+/// implementations to only implement what they support:
+/// - `enqueue` is only needed for discoverer (not needed for stdin source)
+/// - `depth` is only needed for monitoring (not critical for basic operation)
 #[async_trait]
 pub trait WorkQueue: Send + Sync {
     /// Enqueues a work item for processing.
-    async fn enqueue(&self, item: WorkItem) -> Result<()>;
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns an error indicating the operation is not supported.
+    /// Implementations that only receive (like stdin) can use this default.
+    async fn enqueue(&self, _item: WorkItem) -> Result<()> {
+        Err(pf_error::PfError::Queue(pf_error::QueueError::Enqueue(
+            "enqueue not supported by this implementation".to_string(),
+        )))
+    }
 
     /// Receives a batch of messages (long-polling).
     ///
@@ -33,8 +54,9 @@ pub trait WorkQueue: Send + Sync {
     ///
     /// # Returns
     ///
-    /// Vector of messages, may be empty if queue is empty
-    async fn receive_batch(&self, max: usize) -> Result<Vec<QueueMessage>>;
+    /// - `Ok(Some(vec))` - Messages received (may be empty if no messages available)
+    /// - `Ok(None)` - Source is exhausted (EOF reached, drain complete)
+    async fn receive_batch(&self, max: usize) -> Result<Option<Vec<QueueMessage>>>;
 
     /// Acknowledges successful processing (deletes message).
     async fn ack(&self, receipt: &str) -> Result<()>;
@@ -46,12 +68,30 @@ pub trait WorkQueue: Send + Sync {
     async fn move_to_dlq(&self, receipt: &str, failure: &FailureContext) -> Result<()>;
 
     /// Gets approximate queue depth (for monitoring).
-    async fn depth(&self) -> Result<QueueDepth>;
+    ///
+    /// # Default Implementation
+    ///
+    /// Returns zeros for implementations that don't support depth queries.
+    async fn depth(&self) -> Result<QueueDepth> {
+        Ok(QueueDepth::default())
+    }
 
     /// Checks if the queue is empty.
     async fn is_empty(&self) -> Result<bool> {
         let depth = self.depth().await?;
         Ok(depth.visible == 0 && depth.in_flight == 0)
+    }
+
+    /// Returns true if more work may be available.
+    ///
+    /// Used for drain mode support - when this returns false, the worker
+    /// knows it can shut down gracefully.
+    ///
+    /// # Default Implementation
+    ///
+    /// Always returns true (continuous queue operation).
+    fn has_more(&self) -> bool {
+        true
     }
 }
 

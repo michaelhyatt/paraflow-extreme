@@ -1,8 +1,10 @@
 //! Stdin work source implementation.
 
-use super::{parse_work_item, WorkAck, WorkMessage, WorkNack, WorkSource};
+use super::parse_work_item;
 use async_trait::async_trait;
+use chrono::Utc;
 use pf_error::{PfError, QueueError, Result};
+use pf_traits::{FailureContext, QueueMessage, WorkQueue};
 use std::io::{self, BufRead, BufReader};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -68,8 +70,8 @@ impl Default for StdinSource {
 }
 
 #[async_trait]
-impl WorkSource for StdinSource {
-    async fn receive(&self, max: usize) -> Result<Option<Vec<WorkMessage>>> {
+impl WorkQueue for StdinSource {
+    async fn receive_batch(&self, max: usize) -> Result<Option<Vec<QueueMessage>>> {
         if self.eof_reached.load(Ordering::Relaxed) {
             return Ok(None);
         }
@@ -98,10 +100,11 @@ impl WorkSource for StdinSource {
 
                     match parse_work_item(line) {
                         Some(work_item) => {
-                            messages.push(WorkMessage {
-                                id: self.next_message_id(),
+                            messages.push(QueueMessage {
+                                receipt_handle: self.next_message_id(),
                                 work_item,
                                 receive_count: 1,
+                                first_received_at: Utc::now(),
                             });
                         }
                         None => {
@@ -126,22 +129,24 @@ impl WorkSource for StdinSource {
         }
     }
 
-    async fn ack(&self, items: &[WorkAck]) -> Result<()> {
+    async fn ack(&self, receipt: &str) -> Result<()> {
         // No-op for stdin - just log
-        for item in items {
-            trace!("Ack for stdin message: {}", item.id);
-        }
+        trace!("Ack for stdin message: {}", receipt);
         Ok(())
     }
 
-    async fn nack(&self, items: &[WorkNack]) -> Result<()> {
+    async fn nack(&self, receipt: &str) -> Result<()> {
         // Log failures for stdin
-        for item in items {
-            warn!(
-                "Nack for stdin message {}: {} (dlq={})",
-                item.id, item.failure.error_message, item.should_dlq
-            );
-        }
+        warn!("Nack for stdin message: {}", receipt);
+        Ok(())
+    }
+
+    async fn move_to_dlq(&self, receipt: &str, failure: &FailureContext) -> Result<()> {
+        // Log DLQ moves for stdin
+        warn!(
+            "DLQ for stdin message {}: {}",
+            receipt, failure.error_message
+        );
         Ok(())
     }
 
@@ -182,12 +187,12 @@ mod tests {
         let input = Cursor::new(format!("{}\n", json));
         let source = StdinSource::with_reader(Box::new(input));
 
-        let messages = source.receive(10).await.unwrap().unwrap();
+        let messages = source.receive_batch(10).await.unwrap().unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].work_item.job_id, "test-job");
 
         // Next receive should return None (EOF)
-        let next = source.receive(10).await.unwrap();
+        let next = source.receive_batch(10).await.unwrap();
         assert!(next.is_none() || next.unwrap().is_empty());
         assert!(!source.has_more()); // EOF should now be signaled
     }
@@ -199,7 +204,7 @@ mod tests {
         let input = Cursor::new(format!("{}\n{}\n", json1, json2));
         let source = StdinSource::with_reader(Box::new(input));
 
-        let messages = source.receive(10).await.unwrap().unwrap();
+        let messages = source.receive_batch(10).await.unwrap().unwrap();
         assert_eq!(messages.len(), 2);
     }
 
@@ -209,7 +214,7 @@ mod tests {
         let input = Cursor::new(format!("\n{}\n\n", json));
         let source = StdinSource::with_reader(Box::new(input));
 
-        let messages = source.receive(10).await.unwrap().unwrap();
+        let messages = source.receive_batch(10).await.unwrap().unwrap();
         assert_eq!(messages.len(), 1);
     }
 
@@ -219,7 +224,7 @@ mod tests {
         let input = Cursor::new(format!("invalid json\n{}\n", json));
         let source = StdinSource::with_reader(Box::new(input));
 
-        let messages = source.receive(10).await.unwrap().unwrap();
+        let messages = source.receive_batch(10).await.unwrap().unwrap();
         // Should skip the invalid line and return the valid one
         assert_eq!(messages.len(), 1);
     }
@@ -229,7 +234,7 @@ mod tests {
         let input = Cursor::new("");
         let source = StdinSource::with_reader(Box::new(input));
 
-        let messages = source.receive(10).await.unwrap();
+        let messages = source.receive_batch(10).await.unwrap();
         assert!(messages.is_none());
         assert!(!source.has_more());
     }
@@ -240,7 +245,8 @@ mod tests {
         let source = StdinSource::with_reader(Box::new(input));
 
         // These should be no-ops
-        source.ack(&[WorkAck::new("test-id")]).await.unwrap();
+        source.ack("test-id").await.unwrap();
+        source.nack("test-id").await.unwrap();
 
         let item = pf_types::WorkItem {
             job_id: "test".to_string(),
@@ -256,8 +262,8 @@ mod tests {
             attempt: 0,
             enqueued_at: Utc::now(),
         };
-        let failure = pf_traits::FailureContext::new(item, "test", "test error", "test");
-        source.nack(&[WorkNack::retry("test-id", failure)]).await.unwrap();
+        let failure = FailureContext::new(item, "test", "test error", "test");
+        source.move_to_dlq("test-id", &failure).await.unwrap();
     }
 
     #[tokio::test]
@@ -267,7 +273,7 @@ mod tests {
         let input = Cursor::new(format!("{}\n", json));
         let source = StdinSource::with_reader(Box::new(input));
 
-        let messages = source.receive(10).await.unwrap().unwrap();
+        let messages = source.receive_batch(10).await.unwrap().unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].work_item.file_uri, "s3://bucket/file.parquet");
         assert_eq!(messages[0].work_item.file_size_bytes, 1024);
@@ -282,7 +288,7 @@ mod tests {
         let input = Cursor::new(format!("{}\n", json));
         let source = StdinSource::with_reader(Box::new(input));
 
-        let messages = source.receive(10).await.unwrap().unwrap();
+        let messages = source.receive_batch(10).await.unwrap().unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].work_item.file_uri, "s3://bucket/data.ndjson");
         assert_eq!(messages[0].work_item.format, FileFormat::NdJson);
@@ -296,7 +302,7 @@ mod tests {
         let input = Cursor::new(format!("{}\n{}\n", work_item_json, discovered_json));
         let source = StdinSource::with_reader(Box::new(input));
 
-        let messages = source.receive(10).await.unwrap().unwrap();
+        let messages = source.receive_batch(10).await.unwrap().unwrap();
         assert_eq!(messages.len(), 2);
         // First is full WorkItem
         assert_eq!(messages[0].work_item.job_id, "test-job");
@@ -304,6 +310,4 @@ mod tests {
         assert_eq!(messages[1].work_item.job_id, "discovered");
         assert_eq!(messages[1].work_item.file_uri, "s3://bucket/file2.parquet");
     }
-
-    // Tests for parse_work_item and guess_format_from_uri moved to mod.rs
 }

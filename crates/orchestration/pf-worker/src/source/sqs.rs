@@ -1,9 +1,11 @@
 //! SQS work source implementation.
 
-use super::{parse_work_item, WorkAck, WorkMessage, WorkNack, WorkSource};
+use super::parse_work_item;
 use async_trait::async_trait;
 use aws_sdk_sqs::Client;
+use chrono::Utc;
 use pf_error::{PfError, QueueError, Result};
+use pf_traits::{FailureContext, QueueMessage, WorkQueue};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use tracing::{debug, error, info, warn};
@@ -143,8 +145,8 @@ impl SqsSource {
 }
 
 #[async_trait]
-impl WorkSource for SqsSource {
-    async fn receive(&self, max: usize) -> Result<Option<Vec<WorkMessage>>> {
+impl WorkQueue for SqsSource {
+    async fn receive_batch(&self, max: usize) -> Result<Option<Vec<QueueMessage>>> {
         if self.stopped.load(Ordering::Relaxed) {
             return Ok(None);
         }
@@ -201,10 +203,11 @@ impl WorkSource for SqsSource {
             // Try to parse as WorkItem or DiscoveredFile
             match parse_work_item(&body) {
                 Some(work_item) => {
-                    messages.push(WorkMessage {
-                        id: receipt_handle,
+                    messages.push(QueueMessage {
+                        receipt_handle,
                         work_item,
                         receive_count,
+                        first_received_at: Utc::now(),
                     });
                 }
                 None => {
@@ -227,106 +230,81 @@ impl WorkSource for SqsSource {
         Ok(Some(messages))
     }
 
-    async fn ack(&self, items: &[WorkAck]) -> Result<()> {
-        if items.is_empty() {
-            return Ok(());
-        }
+    async fn ack(&self, receipt: &str) -> Result<()> {
+        self.client
+            .delete_message()
+            .queue_url(&self.config.queue_url)
+            .receipt_handle(receipt)
+            .send()
+            .await
+            .map_err(|e| PfError::Queue(QueueError::Ack(format!("SQS delete failed: {}", e))))?;
 
-        // SQS supports batch delete up to 10 messages
-        for chunk in items.chunks(10) {
-            let entries: Vec<_> = chunk
-                .iter()
-                .enumerate()
-                .map(|(i, item)| {
-                    aws_sdk_sqs::types::DeleteMessageBatchRequestEntry::builder()
-                        .id(i.to_string())
-                        .receipt_handle(&item.id)
-                        .build()
-                        .unwrap()
-                })
-                .collect();
-
-            let result = self
-                .client
-                .delete_message_batch()
-                .queue_url(&self.config.queue_url)
-                .set_entries(Some(entries))
-                .send()
-                .await
-                .map_err(|e| PfError::Queue(QueueError::Ack(format!("SQS batch delete failed: {}", e))))?;
-
-            for f in &result.failed {
-                warn!("Failed to delete message {}: {}", f.id, f.message.as_deref().unwrap_or("unknown"));
-            }
-        }
-
-        debug!("Acknowledged {} messages", items.len());
+        debug!("Acknowledged message: {}", receipt);
         Ok(())
     }
 
-    async fn nack(&self, items: &[WorkNack]) -> Result<()> {
-        for item in items {
-            if item.should_dlq {
-                // Move to DLQ if configured
-                if let Some(dlq_url) = &self.config.dlq_url {
-                    // Send failure context to DLQ
-                    let body = serde_json::to_string(&item.failure).map_err(|e| {
-                        PfError::Queue(QueueError::Serialize(format!(
-                            "Failed to serialize failure context: {}",
-                            e
-                        )))
-                    })?;
+    async fn nack(&self, receipt: &str) -> Result<()> {
+        // Return to queue for retry - change visibility to 0
+        self.client
+            .change_message_visibility()
+            .queue_url(&self.config.queue_url)
+            .receipt_handle(receipt)
+            .visibility_timeout(0)
+            .send()
+            .await
+            .map_err(|e| {
+                PfError::Queue(QueueError::Nack(format!(
+                    "Failed to change visibility: {}",
+                    e
+                )))
+            })?;
 
-                    self.client
-                        .send_message()
-                        .queue_url(dlq_url)
-                        .message_body(body)
-                        .send()
-                        .await
-                        .map_err(|e| {
-                            PfError::Queue(QueueError::DlqMove(format!("Failed to send to DLQ: {}", e)))
-                        })?;
+        debug!("Returned message {} to queue for retry", receipt);
+        Ok(())
+    }
 
-                    // Delete from main queue
-                    self.client
-                        .delete_message()
-                        .queue_url(&self.config.queue_url)
-                        .receipt_handle(&item.id)
-                        .send()
-                        .await
-                        .map_err(|e| {
-                            PfError::Queue(QueueError::Ack(format!("Failed to delete message: {}", e)))
-                        })?;
+    async fn move_to_dlq(&self, receipt: &str, failure: &FailureContext) -> Result<()> {
+        // Move to DLQ if configured
+        if let Some(dlq_url) = &self.config.dlq_url {
+            // Send failure context to DLQ
+            let body = serde_json::to_string(failure).map_err(|e| {
+                PfError::Queue(QueueError::Serialize(format!(
+                    "Failed to serialize failure context: {}",
+                    e
+                )))
+            })?;
 
-                    info!(
-                        "Moved message {} to DLQ: {}",
-                        item.id, item.failure.error_message
-                    );
-                } else {
-                    // No explicit DLQ - let SQS redrive policy handle it
-                    warn!(
-                        "Message {} should go to DLQ but no DLQ configured, will be redriven by SQS policy",
-                        item.id
-                    );
-                }
-            } else {
-                // Return to queue for retry - change visibility to 0
-                self.client
-                    .change_message_visibility()
-                    .queue_url(&self.config.queue_url)
-                    .receipt_handle(&item.id)
-                    .visibility_timeout(0)
-                    .send()
-                    .await
-                    .map_err(|e| {
-                        PfError::Queue(QueueError::Nack(format!(
-                            "Failed to change visibility: {}",
-                            e
-                        )))
-                    })?;
+            self.client
+                .send_message()
+                .queue_url(dlq_url)
+                .message_body(body)
+                .send()
+                .await
+                .map_err(|e| {
+                    PfError::Queue(QueueError::DlqMove(format!("Failed to send to DLQ: {}", e)))
+                })?;
 
-                debug!("Returned message {} to queue for retry", item.id);
-            }
+            // Delete from main queue
+            self.client
+                .delete_message()
+                .queue_url(&self.config.queue_url)
+                .receipt_handle(receipt)
+                .send()
+                .await
+                .map_err(|e| {
+                    PfError::Queue(QueueError::Ack(format!("Failed to delete message: {}", e)))
+                })?;
+
+            info!(
+                "Moved message {} to DLQ: {}",
+                receipt, failure.error_message
+            );
+        } else {
+            // No explicit DLQ - let SQS redrive policy handle it
+            warn!(
+                "Message {} should go to DLQ but no DLQ configured, will be redriven by SQS policy",
+                receipt
+            );
         }
 
         Ok(())
