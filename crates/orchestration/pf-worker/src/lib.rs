@@ -33,6 +33,7 @@
 pub mod config;
 pub mod destination;
 pub mod pipeline;
+pub mod reader;
 pub mod router;
 pub mod source;
 pub mod stats;
@@ -41,6 +42,7 @@ pub mod worker;
 pub use config::WorkerConfig;
 pub use destination::{create_destination, DestinationType, StatsDestination, StdoutDestination};
 pub use pipeline::{Pipeline, ThreadStats};
+pub use reader::{create_reader, FormatDispatchReader, ReaderFactory, ReaderFactoryConfig};
 pub use router::WorkRouter;
 pub use source::{SqsSource, SqsSourceConfig, StdinSource, WorkMessage, WorkSource};
 pub use stats::WorkerStats;

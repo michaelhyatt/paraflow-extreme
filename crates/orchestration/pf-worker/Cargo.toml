@@ -10,6 +10,8 @@ description = "High-throughput data processing worker for paraflow-extreme"
 pf-types = { workspace = true }
 pf-traits = { workspace = true }
 pf-error = { workspace = true }
+pf-reader-parquet = { path = "../../reader/pf-reader-parquet" }
+pf-reader-ndjson = { path = "../../reader/pf-reader-ndjson" }
 
 # Async runtime
 tokio = { workspace = true, features = ["full"] }

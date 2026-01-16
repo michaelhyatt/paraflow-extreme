@@ -91,6 +91,10 @@ pub enum ReaderError {
     #[error("I/O error: {0}")]
     Io(String),
 
+    /// Generic I/O error (alias for compatibility)
+    #[error("I/O error: {0}")]
+    IoError(String),
+
     /// Schema mismatch or unsupported type
     #[error("Schema error: {0}")]
     Schema(String),
@@ -98,6 +102,22 @@ pub enum ReaderError {
     /// Decompression failed
     #[error("Decompression failed: {0}")]
     Decompression(String),
+
+    /// Invalid URI format
+    #[error("Invalid URI: {0}")]
+    InvalidUri(String),
+
+    /// S3 operation failed
+    #[error("S3 error: {0}")]
+    S3Error(String),
+
+    /// Parse error (for Parquet/JSON parsing)
+    #[error("Parse error: {0}")]
+    ParseError(String),
+
+    /// Unsupported file format
+    #[error("Unsupported format: {0}")]
+    UnsupportedFormat(String),
 }
 
 /// Indexer-related errors.
@@ -243,7 +263,7 @@ fn classify_reader_error(error: &ReaderError, stage: ProcessingStage) -> ErrorCa
         ReaderError::NotFound(_) => ErrorCategory::Permanent,
         ReaderError::AccessDenied(_) => ErrorCategory::Permanent,
         ReaderError::InvalidFormat(_) => ErrorCategory::Permanent,
-        ReaderError::Io(_) => {
+        ReaderError::Io(_) | ReaderError::IoError(_) => {
             // I/O errors during S3 download might be transient
             if matches!(stage, ProcessingStage::S3Download) {
                 ErrorCategory::Transient
@@ -253,6 +273,17 @@ fn classify_reader_error(error: &ReaderError, stage: ProcessingStage) -> ErrorCa
         }
         ReaderError::Schema(_) => ErrorCategory::Permanent,
         ReaderError::Decompression(_) => ErrorCategory::Permanent,
+        ReaderError::InvalidUri(_) => ErrorCategory::Permanent,
+        ReaderError::S3Error(_) => {
+            // S3 errors during download are typically transient
+            if matches!(stage, ProcessingStage::S3Download) {
+                ErrorCategory::Transient
+            } else {
+                ErrorCategory::Permanent
+            }
+        }
+        ReaderError::ParseError(_) => ErrorCategory::Permanent,
+        ReaderError::UnsupportedFormat(_) => ErrorCategory::Permanent,
     }
 }
 

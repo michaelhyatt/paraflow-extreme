@@ -2,12 +2,12 @@
 
 use anyhow::Result;
 use pf_worker::{
-    StatsDestination, StdoutDestination, WorkerConfig, Worker, StdinSource, SqsSource, SqsSourceConfig,
+    FormatDispatchReader, ReaderFactoryConfig, SqsSource, SqsSourceConfig, StatsDestination,
+    StdinSource, StdoutDestination, Worker, WorkerConfig,
     destination::OutputFormat,
 };
 use pf_traits::BatchIndexer;
 use std::sync::Arc;
-use std::time::Duration;
 use tracing::Level;
 use tracing_subscriber::fmt;
 
@@ -54,8 +54,12 @@ pub async fn execute(args: Cli) -> Result<pf_worker::stats::StatsSnapshot> {
         DestinationType::Stats => Arc::new(StatsDestination::new()),
     };
 
-    // Create reader (placeholder - needs actual implementation)
-    let reader = PlaceholderReader::new(&args.region, args.s3_endpoint.as_deref()).await?;
+    // Create reader with format dispatch (supports both Parquet and NDJSON)
+    let mut reader_config = ReaderFactoryConfig::new(&args.region);
+    if let Some(ref endpoint) = args.s3_endpoint {
+        reader_config = reader_config.with_endpoint(endpoint);
+    }
+    let reader = FormatDispatchReader::new(reader_config).await?;
 
     // Execute based on input type
     let stats = match args.input {
@@ -85,50 +89,4 @@ pub async fn execute(args: Cli) -> Result<pf_worker::stats::StatsSnapshot> {
     };
 
     Ok(stats)
-}
-
-/// Placeholder reader implementation.
-///
-/// This is a temporary implementation until pf-reader-parquet and pf-reader-ndjson
-/// are fully implemented.
-pub struct PlaceholderReader {
-    region: String,
-    endpoint: Option<String>,
-}
-
-impl PlaceholderReader {
-    pub async fn new(region: &str, endpoint: Option<&str>) -> Result<Self> {
-        Ok(Self {
-            region: region.to_string(),
-            endpoint: endpoint.map(String::from),
-        })
-    }
-}
-
-use async_trait::async_trait;
-use pf_error::{PfError, ReaderError};
-use arrow::datatypes::{DataType, Field, Schema};
-use pf_traits::{BatchStream, FileMetadata, StreamingReader};
-
-#[async_trait]
-impl StreamingReader for PlaceholderReader {
-    async fn read_stream(&self, uri: &str) -> pf_error::Result<BatchStream> {
-        // Placeholder - return an error indicating not implemented
-        // In a real implementation, this would:
-        // 1. Parse the URI to determine if S3 or local file
-        // 2. Create appropriate reader based on file format
-        // 3. Return a stream of batches
-        Err(PfError::Reader(ReaderError::NotFound(format!(
-            "Reader not yet implemented for: {}. Use pf-reader-parquet or pf-reader-ndjson.",
-            uri
-        ))))
-    }
-
-    async fn file_metadata(&self, uri: &str) -> pf_error::Result<FileMetadata> {
-        // Placeholder schema
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("placeholder", DataType::Utf8, true),
-        ]));
-        Ok(FileMetadata::new(0, schema))
-    }
 }
