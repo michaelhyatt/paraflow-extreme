@@ -1,0 +1,43 @@
+[package]
+name = "pf-worker-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "CLI for pf-worker - high-throughput data processing worker for paraflow-extreme"
+
+[[bin]]
+name = "pf-worker"
+path = "src/main.rs"
+
+[dependencies]
+# CLI
+clap = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+futures = { workspace = true }
+
+# AWS
+aws-sdk-s3 = { workspace = true }
+aws-sdk-sqs = { workspace = true }
+aws-config = { workspace = true }
+
+# Internal
+pf-types = { workspace = true }
+pf-traits = { workspace = true }
+pf-error = { workspace = true }
+pf-worker = { path = "../../crates/orchestration/pf-worker" }
+
+# Arrow
+arrow = { workspace = true }
+
+# Async traits
+async-trait = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }

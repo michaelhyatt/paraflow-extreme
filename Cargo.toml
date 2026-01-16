@@ -10,6 +10,7 @@ members = [
     "crates/support/*",
     "cli",
     "cli/discoverer",
+    "cli/worker",
 ]
 
 [workspace.package]

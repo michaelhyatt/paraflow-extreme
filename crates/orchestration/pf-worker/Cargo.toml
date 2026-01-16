@@ -4,6 +4,41 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Placeholder for pf-worker"
+description = "High-throughput data processing worker for paraflow-extreme"
 
 [dependencies]
+pf-types = { workspace = true }
+pf-traits = { workspace = true }
+pf-error = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true, features = ["full"] }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# Arrow
+arrow = { workspace = true }
+
+# AWS SDK
+aws-config = { workspace = true }
+aws-sdk-sqs = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# UUID
+uuid = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
