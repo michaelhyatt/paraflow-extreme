@@ -469,17 +469,32 @@ impl NdjsonBatchStream {
         initial_lines: Vec<String>,
         tx: tokio::sync::mpsc::Sender<Result<Batch>>,
     ) -> Result<()> {
-        let mut line_buffer: Vec<String> = initial_lines;
+        // Pre-allocate a single String buffer for accumulating JSON lines.
+        // Estimate ~128 bytes per line as typical for JSON records.
+        // This avoids per-line String allocations and the join() allocation.
+        let estimated_capacity = batch_size * 128;
+        let mut json_buffer = String::with_capacity(estimated_capacity);
+        let mut line_count = 0usize;
         let mut batch_index = 0;
         let mut line = String::new();
 
-        // Process initial lines if we already have enough for a batch
-        while line_buffer.len() >= batch_size {
-            let batch_lines: Vec<String> = line_buffer.drain(..batch_size).collect();
-            let batch = Self::lines_to_batch(&schema, &batch_lines, &uri, batch_index)?;
-            batch_index += 1;
-            if tx.send(Ok(batch)).await.is_err() {
-                return Ok(()); // Receiver dropped
+        // Process initial lines - append them to our buffer
+        for initial_line in initial_lines {
+            if !json_buffer.is_empty() {
+                json_buffer.push('\n');
+            }
+            json_buffer.push_str(&initial_line);
+            line_count += 1;
+
+            if line_count >= batch_size {
+                let batch = Self::buffer_to_batch(&schema, &json_buffer, line_count, &uri, batch_index)?;
+                batch_index += 1;
+                // Clear buffer but keep capacity for reuse
+                json_buffer.clear();
+                line_count = 0;
+                if tx.send(Ok(batch)).await.is_err() {
+                    return Ok(()); // Receiver dropped
+                }
             }
         }
 
@@ -492,8 +507,8 @@ impl NdjsonBatchStream {
 
             if bytes_read == 0 {
                 // EOF - flush remaining lines
-                if !line_buffer.is_empty() {
-                    let batch = Self::lines_to_batch(&schema, &line_buffer, &uri, batch_index)?;
+                if line_count > 0 {
+                    let batch = Self::buffer_to_batch(&schema, &json_buffer, line_count, &uri, batch_index)?;
                     let _ = tx.send(Ok(batch)).await;
                 }
                 break;
@@ -501,12 +516,19 @@ impl NdjsonBatchStream {
 
             let trimmed = line.trim();
             if !trimmed.is_empty() {
-                line_buffer.push(trimmed.to_string());
+                // Append directly to buffer instead of creating intermediate Strings
+                if !json_buffer.is_empty() {
+                    json_buffer.push('\n');
+                }
+                json_buffer.push_str(trimmed);
+                line_count += 1;
 
-                if line_buffer.len() >= batch_size {
-                    let batch_lines: Vec<String> = line_buffer.drain(..batch_size).collect();
-                    let batch = Self::lines_to_batch(&schema, &batch_lines, &uri, batch_index)?;
+                if line_count >= batch_size {
+                    let batch = Self::buffer_to_batch(&schema, &json_buffer, line_count, &uri, batch_index)?;
                     batch_index += 1;
+                    // Clear buffer but keep capacity for reuse
+                    json_buffer.clear();
+                    line_count = 0;
                     if tx.send(Ok(batch)).await.is_err() {
                         return Ok(()); // Receiver dropped
                     }
@@ -517,24 +539,27 @@ impl NdjsonBatchStream {
         Ok(())
     }
 
-    /// Convert buffered lines to a RecordBatch.
-    fn lines_to_batch(
+    /// Convert pre-built JSON buffer to a RecordBatch.
+    ///
+    /// This method takes a pre-allocated buffer containing newline-separated JSON
+    /// records, avoiding the double allocation of Vec<String> + join().
+    fn buffer_to_batch(
         schema: &SchemaRef,
-        lines: &[String],
+        json_buffer: &str,
+        line_count: usize,
         uri: &str,
         batch_index: usize,
     ) -> Result<Batch> {
-        if lines.is_empty() {
+        if json_buffer.is_empty() || line_count == 0 {
             return Err(PfError::Reader(ReaderError::ParseError(
                 "No lines to convert to batch".to_string(),
             )));
         }
 
-        let json_data = lines.join("\n");
-        let cursor = std::io::Cursor::new(json_data.as_bytes());
+        let cursor = std::io::Cursor::new(json_buffer.as_bytes());
 
         let reader = ReaderBuilder::new(schema.clone())
-            .with_batch_size(lines.len())
+            .with_batch_size(line_count)
             .build(std::io::BufReader::new(cursor))
             .map_err(|e| {
                 PfError::Reader(ReaderError::ParseError(format!(
