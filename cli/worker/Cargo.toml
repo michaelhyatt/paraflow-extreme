@@ -1,0 +1,29 @@
+[package]
+name = "pf-worker-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "CLI for pf-worker - high-throughput data processing worker for paraflow-extreme"
+
+[[bin]]
+name = "pf-worker"
+path = "src/main.rs"
+
+[dependencies]
+# CLI
+clap = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+
+# Internal
+pf-traits = { workspace = true }
+pf-worker = { path = "../../crates/orchestration/pf-worker" }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
