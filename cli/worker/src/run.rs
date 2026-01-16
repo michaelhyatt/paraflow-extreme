@@ -1,6 +1,8 @@
 //! Main execution logic for pf-worker CLI.
 
 use anyhow::Result;
+use aws_config::BehaviorVersion;
+use aws_credential_types::provider::ProvideCredentials;
 use pf_worker::{
     FormatDispatchReader, ReaderFactoryConfig, SqsSource, SqsSourceConfig, StatsDestination,
     StdinSource, StdoutDestination, Worker, WorkerConfig,
@@ -8,11 +10,39 @@ use pf_worker::{
 };
 use pf_traits::BatchIndexer;
 use std::sync::Arc;
+use tracing::info;
 
 use crate::args::{Cli, DestinationType, InputType};
 use crate::progress::ProgressReporter;
 
 pub use pf_cli_common::init_logging;
+
+/// Resolve AWS credentials using the full AWS SDK credential chain.
+/// This supports AWS_PROFILE, SSO, instance roles, and all other AWS credential sources.
+async fn resolve_aws_credentials() -> Result<Option<(String, String, Option<String>)>> {
+    let config = aws_config::defaults(BehaviorVersion::latest()).load().await;
+
+    let credentials_provider = config.credentials_provider();
+    if let Some(provider) = credentials_provider {
+        match provider.provide_credentials().await {
+            Ok(creds) => {
+                info!("AWS credentials resolved successfully");
+                Ok(Some((
+                    creds.access_key_id().to_string(),
+                    creds.secret_access_key().to_string(),
+                    creds.session_token().map(|s| s.to_string()),
+                )))
+            }
+            Err(e) => {
+                // No credentials available - this is OK for public buckets
+                info!("No AWS credentials available: {}", e);
+                Ok(None)
+            }
+        }
+    } else {
+        Ok(None)
+    }
+}
 
 /// Execute the worker with the provided arguments.
 pub async fn execute(args: Cli) -> Result<pf_worker::stats::StatsSnapshot> {
@@ -42,11 +72,22 @@ pub async fn execute(args: Cli) -> Result<pf_worker::stats::StatsSnapshot> {
         DestinationType::Stats => Arc::new(StatsDestination::new()),
     };
 
+    // Resolve AWS credentials using the full AWS SDK credential chain
+    // This handles AWS_PROFILE, SSO, instance roles, environment variables, etc.
+    let credentials = resolve_aws_credentials().await?;
+
     // Create reader with format dispatch (supports both Parquet and NDJSON)
     let mut reader_config = ReaderFactoryConfig::new(&args.region);
+
     if let Some(ref endpoint) = args.s3_endpoint {
         reader_config = reader_config.with_endpoint(endpoint);
     }
+
+    // Pass resolved credentials to the reader
+    if let Some((access_key, secret_key, session_token)) = credentials {
+        reader_config = reader_config.with_credentials(access_key, secret_key, session_token);
+    }
+
     let reader = FormatDispatchReader::new(reader_config).await?;
 
     // Execute based on input type

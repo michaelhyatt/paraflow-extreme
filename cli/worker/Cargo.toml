@@ -22,6 +22,10 @@ pf-traits = { workspace = true }
 pf-worker = { path = "../../crates/orchestration/pf-worker" }
 pf-cli-common = { path = "../common" }
 
+# AWS SDK for credential resolution
+aws-config = { workspace = true }
+aws-credential-types = { workspace = true }
+
 # Logging
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

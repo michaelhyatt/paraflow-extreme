@@ -19,6 +19,15 @@ pub struct ReaderFactoryConfig {
 
     /// Batch size for reading
     pub batch_size: usize,
+
+    /// Optional AWS access key ID
+    pub access_key: Option<String>,
+
+    /// Optional AWS secret access key
+    pub secret_key: Option<String>,
+
+    /// Optional AWS session token (for temporary credentials)
+    pub session_token: Option<String>,
 }
 
 impl ReaderFactoryConfig {
@@ -28,6 +37,9 @@ impl ReaderFactoryConfig {
             region: region.into(),
             endpoint: None,
             batch_size: 8192,
+            access_key: None,
+            secret_key: None,
+            session_token: None,
         }
     }
 
@@ -40,6 +52,19 @@ impl ReaderFactoryConfig {
     /// Set the batch size.
     pub fn with_batch_size(mut self, size: usize) -> Self {
         self.batch_size = size;
+        self
+    }
+
+    /// Set AWS credentials.
+    pub fn with_credentials(
+        mut self,
+        access_key: impl Into<String>,
+        secret_key: impl Into<String>,
+        session_token: Option<String>,
+    ) -> Self {
+        self.access_key = Some(access_key.into());
+        self.secret_key = Some(secret_key.into());
+        self.session_token = session_token;
         self
     }
 }
@@ -68,6 +93,13 @@ impl ReaderFactory {
                     config = config.with_endpoint(endpoint);
                 }
 
+                if let (Some(ak), Some(sk)) =
+                    (&self.config.access_key, &self.config.secret_key)
+                {
+                    config =
+                        config.with_credentials(ak, sk, self.config.session_token.clone());
+                }
+
                 let reader = ParquetReader::new(config).await?;
                 Ok(Arc::new(reader))
             }
@@ -77,6 +109,13 @@ impl ReaderFactory {
 
                 if let Some(ref endpoint) = self.config.endpoint {
                     config = config.with_endpoint(endpoint);
+                }
+
+                if let (Some(ak), Some(sk)) =
+                    (&self.config.access_key, &self.config.secret_key)
+                {
+                    config =
+                        config.with_credentials(ak, sk, self.config.session_token.clone());
                 }
 
                 let reader = NdjsonReader::new(config).await?;

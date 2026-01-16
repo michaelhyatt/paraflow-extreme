@@ -2672,6 +2672,8 @@ name = "pf-worker-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aws-config",
+ "aws-credential-types",
  "built",
  "clap",
  "pf-cli-common",

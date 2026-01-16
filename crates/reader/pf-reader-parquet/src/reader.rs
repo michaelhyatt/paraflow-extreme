@@ -28,6 +28,15 @@ pub struct ParquetReaderConfig {
 
     /// Batch size for reading (number of rows per batch)
     pub batch_size: usize,
+
+    /// Optional AWS access key ID
+    pub access_key: Option<String>,
+
+    /// Optional AWS secret access key
+    pub secret_key: Option<String>,
+
+    /// Optional AWS session token (for temporary credentials)
+    pub session_token: Option<String>,
 }
 
 impl ParquetReaderConfig {
@@ -37,6 +46,9 @@ impl ParquetReaderConfig {
             region: region.into(),
             endpoint: None,
             batch_size: 8192,
+            access_key: None,
+            secret_key: None,
+            session_token: None,
         }
     }
 
@@ -49,6 +61,19 @@ impl ParquetReaderConfig {
     /// Set the batch size.
     pub fn with_batch_size(mut self, size: usize) -> Self {
         self.batch_size = size;
+        self
+    }
+
+    /// Set AWS credentials.
+    pub fn with_credentials(
+        mut self,
+        access_key: impl Into<String>,
+        secret_key: impl Into<String>,
+        session_token: Option<String>,
+    ) -> Self {
+        self.access_key = Some(access_key.into());
+        self.secret_key = Some(secret_key.into());
+        self.session_token = session_token;
         self
     }
 }
@@ -87,9 +112,26 @@ impl ParquetReader {
         if uri.starts_with("s3://") {
             let (bucket, key) = parse_s3_uri(uri)?;
 
+            // Start with a new builder (don't use from_env to avoid IMDS fallback)
             let mut builder = AmazonS3Builder::new()
                 .with_bucket_name(&bucket)
                 .with_region(&self.config.region);
+
+            // Use explicit credentials if provided (resolved by caller via AWS SDK)
+            if let (Some(access_key), Some(secret_key)) =
+                (&self.config.access_key, &self.config.secret_key)
+            {
+                builder = builder
+                    .with_access_key_id(access_key)
+                    .with_secret_access_key(secret_key);
+
+                if let Some(token) = &self.config.session_token {
+                    builder = builder.with_token(token);
+                }
+            } else {
+                // No credentials provided - use anonymous access for public buckets
+                builder = builder.with_skip_signature(true);
+            }
 
             if let Some(endpoint) = &self.config.endpoint {
                 builder = builder

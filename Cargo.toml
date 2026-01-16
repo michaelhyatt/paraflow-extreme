@@ -49,6 +49,7 @@ url = "2"
 
 # AWS SDK
 aws-config = "1"
+aws-credential-types = "1"
 aws-sdk-sqs = "1"
 aws-sdk-s3 = "1"
 
