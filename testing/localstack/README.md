@@ -31,12 +31,12 @@ This directory contains the LocalStack setup for local testing of paraflow-extre
 
 ```bash
 # Run discoverer to find files and pipe to worker
-cargo run --package pf-discoverer-cli -- \
+cargo run -p pf-discoverer-cli -- \
     --bucket test-bucket \
     --prefix data/ \
-    --endpoint http://localhost:4566 \
+    --s3-endpoint http://localhost:4566 \
     --region us-east-1 \
-  | cargo run --package pf-worker-cli -- \
+  | cargo run -p pf-worker-cli -- \
       --input stdin \
       --destination stats \
       --s3-endpoint http://localhost:4566 \
@@ -48,17 +48,17 @@ cargo run --package pf-discoverer-cli -- \
 
 ```bash
 # First, run discoverer to send messages to SQS
-cargo run --package pf-discoverer-cli -- \
+cargo run -p pf-discoverer-cli -- \
     --bucket test-bucket \
     --prefix data/ \
-    --endpoint http://localhost:4566 \
+    --s3-endpoint http://localhost:4566 \
     --region us-east-1 \
-    --output sqs \
+    --destination sqs \
     --sqs-queue-url http://localhost:4566/000000000000/work-queue \
     --sqs-endpoint http://localhost:4566
 
 # Then run worker to process from SQS
-cargo run --package pf-worker-cli -- \
+cargo run -p pf-worker-cli -- \
     --input sqs \
     --sqs-queue-url http://localhost:4566/000000000000/work-queue \
     --sqs-endpoint http://localhost:4566 \
