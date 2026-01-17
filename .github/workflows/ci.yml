@@ -33,5 +33,6 @@ jobs:
       - name: Test
         run: cargo test --lib --all
 
-      - name: Build
-        run: cargo build --release -p pf-discoverer-cli -p pf-worker-cli
+  # build job is currently not used, but kept for future reference
+      # - name: Build
+      #   run: cargo build --release -p pf-discoverer-cli -p pf-worker-cli
