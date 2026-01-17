@@ -19,9 +19,10 @@ Reader → Transform+Enrich → Indexer
 - **Streaming readers** - Parquet and NDJSON with gzip/zstd decompression
 - **S3 file discovery** - Partitioning, filtering, parallel listing
 - **Dual input modes** - SQS for production, stdin for local testing
+- **Rhai transforms** - Per-record scripting with enrichment functions
+- **Enrichment tables** - ExactTable (HashMap) and CidrTable (IP trie) lookups
 
 **Planned:**
-- Rhai transforms with enrichment functions
 - Elasticsearch bulk indexing
 - SQS queue integration (currently stub)
 
