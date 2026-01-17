@@ -19,19 +19,14 @@ pub struct EnrichmentTableConfig {
 }
 
 /// Match type for enrichment lookups.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MatchType {
     /// Exact string match using HashMap (O(1)).
+    #[default]
     Exact,
     /// CIDR/IP prefix match using trie (O(log n) longest-prefix match).
     Cidr,
-}
-
-impl Default for MatchType {
-    fn default() -> Self {
-        Self::Exact
-    }
 }
 
 #[cfg(test)]

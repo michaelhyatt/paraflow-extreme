@@ -899,7 +899,7 @@ mod tests {
 
         // Write some records with empty lines interspersed
         writeln!(file, r#"{{"id": 1, "name": "one"}}"#).unwrap();
-        writeln!(file, "").unwrap(); // empty line
+        writeln!(file).unwrap(); // empty line
         writeln!(file, r#"{{"id": 2, "name": "two"}}"#).unwrap();
         writeln!(file, "   ").unwrap(); // whitespace-only line
         writeln!(file, r#"{{"id": 3, "name": "three"}}"#).unwrap();

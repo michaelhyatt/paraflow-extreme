@@ -103,7 +103,7 @@ mod tests {
         ]));
 
         let ids: Vec<i64> = (0..num_rows as i64).collect();
-        let names: Vec<Option<&str>> = (0..num_rows).map(|i| Some("test")).collect();
+        let names: Vec<Option<&str>> = (0..num_rows).map(|_| Some("test")).collect();
 
         let id_array = Int64Array::from(ids);
         let name_array = StringArray::from(names);

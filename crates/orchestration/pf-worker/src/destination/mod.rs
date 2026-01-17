@@ -38,15 +38,13 @@ mod tests {
 
     #[test]
     fn test_create_destination_stdout() {
-        let dest = create_destination(DestinationType::Stdout);
+        let _dest = create_destination(DestinationType::Stdout);
         // Just verify it creates without panic
-        assert!(true);
     }
 
     #[test]
     fn test_create_destination_stats() {
-        let dest = create_destination(DestinationType::Stats);
+        let _dest = create_destination(DestinationType::Stats);
         // Just verify it creates without panic
-        assert!(true);
     }
 }

@@ -213,14 +213,9 @@ fn infer_arrow_type(value: &Dynamic) -> DataType {
         DataType::Int64
     } else if value.is_float() {
         DataType::Float64
-    } else if value.is_string() {
-        DataType::Utf8
-    } else if value.is_array() {
-        DataType::Utf8 // Arrays stored as JSON strings
-    } else if value.is_map() {
-        DataType::Utf8 // Maps stored as JSON strings
     } else {
-        DataType::Utf8 // Default to string
+        // Strings, arrays, maps, and other types stored as JSON strings
+        DataType::Utf8
     }
 }
 
@@ -321,7 +316,7 @@ fn build_arrow_column(
                 .collect();
             Ok(Arc::new(Float64Array::from(values)))
         }
-        DataType::Utf8 | _ => {
+        _ => {
             // Default: convert to string
             let values: Vec<Option<String>> = results
                 .iter()

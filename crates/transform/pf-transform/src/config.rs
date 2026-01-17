@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Configuration for a Rhai transform.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TransformConfig {
     /// Inline Rhai script (mutually exclusive with script_file).
     #[serde(default)]
@@ -41,16 +41,6 @@ impl TransformConfig {
     pub fn with_error_policy(mut self, policy: ErrorPolicy) -> Self {
         self.error_policy = policy;
         self
-    }
-}
-
-impl Default for TransformConfig {
-    fn default() -> Self {
-        Self {
-            script: None,
-            script_file: None,
-            error_policy: ErrorPolicy::default(),
-        }
     }
 }
 

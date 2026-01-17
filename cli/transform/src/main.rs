@@ -336,7 +336,7 @@ fn json_line_to_batch(line: &str) -> Result<Arc<RecordBatch>> {
         .with_batch_size(1)
         .build(std::io::Cursor::new(line.as_bytes()))?;
 
-    for batch_result in reader {
+    if let Some(batch_result) = reader.into_iter().next() {
         let batch = batch_result?;
         return Ok(Arc::new(batch));
     }

@@ -187,6 +187,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_parse_float() {
         let engine = create_engine();
 

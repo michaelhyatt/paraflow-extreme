@@ -106,6 +106,7 @@ impl LocalStackTestContext {
     }
 
     /// Upload test Parquet data to S3.
+    #[allow(dead_code)]
     pub async fn upload_parquet(
         &self,
         bucket: &str,
@@ -231,6 +232,7 @@ pub fn generate_test_ndjson(num_records: usize) -> String {
 }
 
 /// Generate test Parquet data with the specified number of records.
+#[allow(dead_code)]
 pub fn generate_test_parquet(num_records: usize) -> Vec<u8> {
     use arrow::array::{Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};

@@ -116,7 +116,7 @@ pub async fn load_table(
         }
         MatchType::Cidr => {
             let table = load_cidr_table(source, key_field, s3_client).await?;
-            Ok(TableType::Cidr(table))
+            Ok(TableType::Cidr(Box::new(table)))
         }
     }
 }
@@ -125,7 +125,7 @@ pub async fn load_table(
 #[allow(dead_code)]
 pub enum TableType {
     Exact(ExactTable),
-    Cidr(CidrTable),
+    Cidr(Box<CidrTable>),
 }
 
 async fn load_from_file(path: &str) -> Result<String> {

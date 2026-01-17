@@ -5,4 +5,5 @@
 
 pub mod localstack;
 
+#[allow(unused_imports)]
 pub use localstack::{LocalStackTestContext, generate_test_ndjson, generate_test_parquet};
