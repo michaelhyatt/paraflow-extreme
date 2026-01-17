@@ -5,7 +5,7 @@ use crate::config::DEFAULT_ACCUMULATOR_THRESHOLD_BYTES;
 use crate::stats::WorkerStats;
 use futures::StreamExt;
 use pf_accumulator::BatchAccumulator;
-use pf_error::{classify_error, ErrorCategory, PfError, ProcessingStage};
+use pf_error::{ErrorCategory, PfError, ProcessingStage, classify_error};
 use pf_traits::{BatchIndexer, BatchStream, QueueMessage, StreamingReader};
 use pf_types::WorkItem;
 use std::sync::Arc;
@@ -420,8 +420,7 @@ mod tests {
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
         let ids: Vec<i64> = (0..num_rows as i64).collect();
         let id_array = Int64Array::from(ids);
-        let record_batch =
-            RecordBatch::try_new(schema, vec![Arc::new(id_array)]).unwrap();
+        let record_batch = RecordBatch::try_new(schema, vec![Arc::new(id_array)]).unwrap();
 
         Batch::new(record_batch, "test.parquet", 0)
     }

@@ -28,8 +28,7 @@ mod tests {
 
     #[test]
     fn test_discovery_config_builder() {
-        let config = DiscoveryConfig::new()
-            .with_max_files(100);
+        let config = DiscoveryConfig::new().with_max_files(100);
 
         assert_eq!(config.max_files, 100);
     }

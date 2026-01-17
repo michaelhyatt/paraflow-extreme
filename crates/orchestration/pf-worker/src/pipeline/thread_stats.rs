@@ -49,12 +49,20 @@ impl ThreadStats {
     }
 
     /// Record a successfully processed file.
-    pub fn record_file_success(&self, records: u64, bytes_read: u64, bytes_written: u64, duration: Duration) {
+    pub fn record_file_success(
+        &self,
+        records: u64,
+        bytes_read: u64,
+        bytes_written: u64,
+        duration: Duration,
+    ) {
         self.files_processed.fetch_add(1, Ordering::Relaxed);
         self.records_processed.fetch_add(records, Ordering::Relaxed);
         self.bytes_read.fetch_add(bytes_read, Ordering::Relaxed);
-        self.bytes_written.fetch_add(bytes_written, Ordering::Relaxed);
-        self.processing_time_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.bytes_written
+            .fetch_add(bytes_written, Ordering::Relaxed);
+        self.processing_time_us
+            .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
     }
 
     /// Record a failed file.

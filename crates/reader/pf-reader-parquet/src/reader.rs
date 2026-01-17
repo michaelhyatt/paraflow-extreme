@@ -6,10 +6,10 @@
 use crate::s3::parse_s3_uri;
 use async_trait::async_trait;
 use futures::StreamExt;
+use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjectPath;
-use object_store::ObjectStore;
 use parquet::arrow::async_reader::{ParquetObjectReader, ParquetRecordBatchStreamBuilder};
 use pf_error::{PfError, ReaderError, Result};
 use pf_traits::{BatchStream, FileMetadata, StreamingReader};
@@ -143,7 +143,10 @@ impl ParquetReader {
 
         // Double-check in case another thread created it while we waited
         if let Some(store) = cache.get(cache_key) {
-            debug!(cache_key = cache_key, "Using cached object store (after lock)");
+            debug!(
+                cache_key = cache_key,
+                "Using cached object store (after lock)"
+            );
             return Ok(Arc::clone(store));
         }
 
@@ -212,7 +215,10 @@ impl ParquetReader {
 
             let store = self.get_or_create_store(LOCAL_STORE_KEY)?;
             let path = ObjectPath::from_absolute_path(path_str).map_err(|e| {
-                PfError::Reader(ReaderError::Io(format!("Invalid local path '{}': {}", uri, e)))
+                PfError::Reader(ReaderError::Io(format!(
+                    "Invalid local path '{}': {}",
+                    uri, e
+                )))
             })?;
 
             Ok((store, path))
@@ -269,36 +275,31 @@ impl StreamingReader for ParquetReader {
         );
 
         // Build the async stream - fetches row groups on demand via byte-range requests
-        let stream = builder
-            .with_batch_size(batch_size)
-            .build()
-            .map_err(|e| {
-                PfError::Reader(ReaderError::ParseError(format!(
-                    "Failed to build Parquet stream for '{}': {}",
-                    uri, e
-                )))
-            })?;
+        let stream = builder.with_batch_size(batch_size).build().map_err(|e| {
+            PfError::Reader(ReaderError::ParseError(format!(
+                "Failed to build Parquet stream for '{}': {}",
+                uri, e
+            )))
+        })?;
 
         // Convert to BatchStream, wrapping each RecordBatch
-        let batch_stream = stream
-            .enumerate()
-            .map(move |(batch_index, result)| {
-                result
-                    .map(|record_batch| {
-                        trace!(
-                            batch_index = batch_index,
-                            rows = record_batch.num_rows(),
-                            "Streamed Parquet batch"
-                        );
-                        Batch::new(record_batch, uri_clone.clone(), batch_index)
-                    })
-                    .map_err(|e| {
-                        PfError::Reader(ReaderError::ParseError(format!(
-                            "Failed to read batch {}: {}",
-                            batch_index, e
-                        )))
-                    })
-            });
+        let batch_stream = stream.enumerate().map(move |(batch_index, result)| {
+            result
+                .map(|record_batch| {
+                    trace!(
+                        batch_index = batch_index,
+                        rows = record_batch.num_rows(),
+                        "Streamed Parquet batch"
+                    );
+                    Batch::new(record_batch, uri_clone.clone(), batch_index)
+                })
+                .map_err(|e| {
+                    PfError::Reader(ReaderError::ParseError(format!(
+                        "Failed to read batch {}: {}",
+                        batch_index, e
+                    )))
+                })
+        });
 
         Ok(Box::pin(batch_stream))
     }
@@ -365,13 +366,7 @@ mod tests {
 
         let ids: Vec<i32> = (0..num_rows as i32).collect();
         let names: Vec<Option<&str>> = (0..num_rows)
-            .map(|i| {
-                if i % 10 == 0 {
-                    None
-                } else {
-                    Some("test_name")
-                }
-            })
+            .map(|i| if i % 10 == 0 { None } else { Some("test_name") })
             .collect();
 
         let batch = RecordBatch::try_new(
@@ -505,7 +500,11 @@ mod tests {
         // Verify cache has one entry for local store
         {
             let cache = reader.store_cache.read().unwrap();
-            assert_eq!(cache.len(), 1, "Cache should have one entry after first read");
+            assert_eq!(
+                cache.len(),
+                1,
+                "Cache should have one entry after first read"
+            );
             assert!(
                 cache.contains_key(super::LOCAL_STORE_KEY),
                 "Cache should contain local store key"

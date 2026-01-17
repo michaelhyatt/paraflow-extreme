@@ -25,22 +25,20 @@ fn register_time_functions(engine: &mut Engine) {
     engine.register_fn("unix_timestamp", || chrono::Utc::now().timestamp());
 
     // Unix timestamp in milliseconds
-    engine.register_fn("unix_timestamp_ms", || chrono::Utc::now().timestamp_millis());
+    engine.register_fn("unix_timestamp_ms", || {
+        chrono::Utc::now().timestamp_millis()
+    });
 }
 
 fn register_parsing_functions(engine: &mut Engine) {
     // Parse string to integer
     engine.register_fn("parse_int", |s: &str| -> Dynamic {
-        s.parse::<i64>()
-            .map(Dynamic::from)
-            .unwrap_or(Dynamic::UNIT)
+        s.parse::<i64>().map(Dynamic::from).unwrap_or(Dynamic::UNIT)
     });
 
     // Parse string to float
     engine.register_fn("parse_float", |s: &str| -> Dynamic {
-        s.parse::<f64>()
-            .map(Dynamic::from)
-            .unwrap_or(Dynamic::UNIT)
+        s.parse::<f64>().map(Dynamic::from).unwrap_or(Dynamic::UNIT)
     });
 
     // Parse string to boolean
@@ -189,6 +187,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_parse_float() {
         let engine = create_engine();
 
@@ -223,7 +222,9 @@ mod tests {
         let result: String = engine.eval(r#"trim("  hello  ")"#).unwrap();
         assert_eq!(result, "hello");
 
-        let result: bool = engine.eval(r#"str_contains("hello world", "world")"#).unwrap();
+        let result: bool = engine
+            .eval(r#"str_contains("hello world", "world")"#)
+            .unwrap();
         assert!(result);
 
         let result: bool = engine.eval(r#"starts_with("hello", "hel")"#).unwrap();

@@ -62,7 +62,8 @@ impl WorkerStats {
         self.files_processed.fetch_add(1, Ordering::Relaxed);
         self.records_processed.fetch_add(records, Ordering::Relaxed);
         self.bytes_read.fetch_add(bytes_read, Ordering::Relaxed);
-        self.bytes_written.fetch_add(bytes_written, Ordering::Relaxed);
+        self.bytes_written
+            .fetch_add(bytes_written, Ordering::Relaxed);
     }
 
     /// Record a failed file.

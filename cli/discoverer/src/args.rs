@@ -211,7 +211,6 @@ impl From<OutputFormatArg> for pf_discoverer::OutputFormat {
     }
 }
 
-
 /// Parse a positive usize (>= 1).
 fn parse_positive_usize(s: &str) -> Result<usize, String> {
     let value: usize = s

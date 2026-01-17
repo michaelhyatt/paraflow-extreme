@@ -172,7 +172,6 @@ impl From<OutputFormat> for pf_worker::destination::OutputFormat {
     }
 }
 
-
 /// Get the number of available CPUs.
 fn num_cpus() -> usize {
     std::thread::available_parallelism()

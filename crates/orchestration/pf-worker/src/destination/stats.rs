@@ -4,8 +4,8 @@ use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use pf_error::Result;
 use pf_traits::{BatchIndexer, IndexResult};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 /// Destination that counts records and tracks metrics without outputting data.
@@ -75,7 +75,8 @@ impl BatchIndexer for StatsDestination {
 
         self.records.fetch_add(count, Ordering::Relaxed);
         self.bytes.fetch_add(bytes, Ordering::Relaxed);
-        self.batches.fetch_add(batches.len() as u64, Ordering::Relaxed);
+        self.batches
+            .fetch_add(batches.len() as u64, Ordering::Relaxed);
 
         Ok(IndexResult::success(count, bytes, start.elapsed()))
     }
@@ -102,16 +103,12 @@ mod tests {
         ]));
 
         let ids: Vec<i64> = (0..num_rows as i64).collect();
-        let names: Vec<Option<&str>> = (0..num_rows).map(|i| Some("test")).collect();
+        let names: Vec<Option<&str>> = (0..num_rows).map(|_| Some("test")).collect();
 
         let id_array = Int64Array::from(ids);
         let name_array = StringArray::from(names);
 
-        RecordBatch::try_new(
-            schema,
-            vec![Arc::new(id_array), Arc::new(name_array)],
-        )
-        .unwrap()
+        RecordBatch::try_new(schema, vec![Arc::new(id_array), Arc::new(name_array)]).unwrap()
     }
 
     #[tokio::test]

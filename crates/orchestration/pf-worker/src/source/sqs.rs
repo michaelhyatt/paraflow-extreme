@@ -160,10 +160,14 @@ impl WorkQueue for SqsSource {
             .max_number_of_messages(batch_size)
             .wait_time_seconds(self.config.wait_time_seconds)
             .visibility_timeout(self.config.visibility_timeout)
-            .message_system_attribute_names(aws_sdk_sqs::types::MessageSystemAttributeName::ApproximateReceiveCount)
+            .message_system_attribute_names(
+                aws_sdk_sqs::types::MessageSystemAttributeName::ApproximateReceiveCount,
+            )
             .send()
             .await
-            .map_err(|e| PfError::Queue(QueueError::Receive(format!("SQS receive failed: {}", e))))?;
+            .map_err(|e| {
+                PfError::Queue(QueueError::Receive(format!("SQS receive failed: {}", e)))
+            })?;
 
         let sqs_messages = response.messages.unwrap_or_default();
         debug!("Received {} messages from SQS", sqs_messages.len());
@@ -196,7 +200,11 @@ impl WorkQueue for SqsSource {
             let receive_count = msg
                 .attributes
                 .as_ref()
-                .and_then(|attrs| attrs.get(&aws_sdk_sqs::types::MessageSystemAttributeName::ApproximateReceiveCount))
+                .and_then(|attrs| {
+                    attrs.get(
+                        &aws_sdk_sqs::types::MessageSystemAttributeName::ApproximateReceiveCount,
+                    )
+                })
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(1);
 

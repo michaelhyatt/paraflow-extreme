@@ -2,10 +2,10 @@
 
 use arrow::array::{
     Array, BinaryArray, BooleanArray, Date32Array, Date64Array, Float32Array, Float64Array,
-    Int16Array, Int32Array, Int64Array, Int8Array, LargeBinaryArray, LargeListArray,
+    Int8Array, Int16Array, Int32Array, Int64Array, LargeBinaryArray, LargeListArray,
     LargeStringArray, ListArray, StringArray, StructArray, TimestampMicrosecondArray,
-    TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray, UInt16Array,
-    UInt32Array, UInt64Array, UInt8Array,
+    TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray, UInt8Array,
+    UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow::datatypes::{DataType, TimeUnit};
 use arrow::record_batch::RecordBatch;
@@ -322,9 +322,9 @@ impl BatchIndexer for StdoutDestination {
     }
 
     async fn flush(&self) -> Result<()> {
-        io::stdout().flush().map_err(|e| {
-            PfError::Other(anyhow::anyhow!("Failed to flush stdout: {}", e))
-        })
+        io::stdout()
+            .flush()
+            .map_err(|e| PfError::Other(anyhow::anyhow!("Failed to flush stdout: {}", e)))
     }
 
     async fn health_check(&self) -> Result<bool> {
@@ -416,8 +416,8 @@ mod tests {
         // 1704067200000 = 2024-01-01T00:00:00Z in milliseconds
         let ts_array = TimestampMillisecondArray::from(vec![1704067200000, 1704153600000]);
 
-        let batch = RecordBatch::try_new(schema, vec![Arc::new(id_array), Arc::new(ts_array)])
-            .unwrap();
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(id_array), Arc::new(ts_array)]).unwrap();
 
         let rows = record_batch_to_json(&batch);
 
@@ -462,11 +462,8 @@ mod tests {
 
         let id_array = Int64Array::from(vec![1, 2, 3]);
 
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![Arc::new(id_array), Arc::new(list_array)],
-        )
-        .unwrap();
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(id_array), Arc::new(list_array)]).unwrap();
 
         let rows = record_batch_to_json(&batch);
 
@@ -513,11 +510,8 @@ mod tests {
 
         let id_array = Int64Array::from(vec![1, 2]);
 
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![Arc::new(id_array), Arc::new(struct_array)],
-        )
-        .unwrap();
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(id_array), Arc::new(struct_array)]).unwrap();
 
         let rows = record_batch_to_json(&batch);
 

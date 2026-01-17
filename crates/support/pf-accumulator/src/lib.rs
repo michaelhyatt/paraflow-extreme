@@ -349,9 +349,8 @@ mod tests {
 
     #[test]
     fn test_accumulator_record_threshold() {
-        let mut accumulator =
-            BatchAccumulator::new(1024 * 1024 * 1024) // Very large byte threshold
-                .with_record_threshold(500);
+        let mut accumulator = BatchAccumulator::new(1024 * 1024 * 1024) // Very large byte threshold
+            .with_record_threshold(500);
 
         // Add batch with 300 records
         let batch1 = create_test_batch(300);

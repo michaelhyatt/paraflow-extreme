@@ -33,12 +33,27 @@ async fn main() -> anyhow::Result<()> {
     // Report results to stderr
     eprintln!();
     eprintln!("Worker completed:");
-    eprintln!("  Files processed:    {}", format_number(stats.files_processed as u64));
-    eprintln!("  Files failed:       {}", format_number(stats.files_failed as u64));
-    eprintln!("  Records processed:  {}", format_number(stats.records_processed));
-    eprintln!("  Records failed:     {}", format_number(stats.records_failed));
+    eprintln!(
+        "  Files processed:    {}",
+        format_number(stats.files_processed as u64)
+    );
+    eprintln!(
+        "  Files failed:       {}",
+        format_number(stats.files_failed as u64)
+    );
+    eprintln!(
+        "  Records processed:  {}",
+        format_number(stats.records_processed)
+    );
+    eprintln!(
+        "  Records failed:     {}",
+        format_number(stats.records_failed)
+    );
     eprintln!("  Bytes read:         {}", format_bytes(stats.bytes_read));
-    eprintln!("  Bytes written:      {}", format_bytes(stats.bytes_written));
+    eprintln!(
+        "  Bytes written:      {}",
+        format_bytes(stats.bytes_written)
+    );
 
     if let Some(duration) = stats.duration() {
         let secs = duration.num_milliseconds() as f64 / 1000.0;

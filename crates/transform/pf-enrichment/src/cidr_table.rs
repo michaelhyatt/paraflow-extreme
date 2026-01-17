@@ -285,10 +285,7 @@ mod tests {
             .unwrap();
 
         table
-            .insert(
-                "::1",
-                vec!["::1/128".to_string(), "LOCALHOST".to_string()],
-            )
+            .insert("::1", vec!["::1/128".to_string(), "LOCALHOST".to_string()])
             .unwrap();
 
         let result = table.lookup("2001:db8::1").unwrap();

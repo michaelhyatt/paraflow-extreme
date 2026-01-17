@@ -22,7 +22,7 @@
 //! pf-transform --script-file ./transform.rhai --validate
 //! ```
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::json::ReaderBuilder;
@@ -33,7 +33,7 @@ use pf_transform::{ErrorPolicy, RhaiTransform, TransformConfig};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{debug, Level};
+use tracing::{Level, debug};
 use tracing_subscriber::FmtSubscriber;
 
 #[derive(Parser, Debug)]
@@ -101,7 +101,12 @@ fn parse_enrichment_spec(s: &str) -> Result<EnrichmentTableConfig, String> {
     let match_type = match parts[1].to_lowercase().as_str() {
         "exact" => MatchType::Exact,
         "cidr" => MatchType::Cidr,
-        other => return Err(format!("Invalid match type: '{}'. Use 'exact' or 'cidr'", other)),
+        other => {
+            return Err(format!(
+                "Invalid match type: '{}'. Use 'exact' or 'cidr'",
+                other
+            ));
+        }
     };
     let source = parts[2].to_string();
 
@@ -136,7 +141,11 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Setup logging
-    let level = if cli.verbose { Level::DEBUG } else { Level::WARN };
+    let level = if cli.verbose {
+        Level::DEBUG
+    } else {
+        Level::WARN
+    };
     let subscriber = FmtSubscriber::builder()
         .with_max_level(level)
         .with_writer(std::io::stderr)
@@ -146,11 +155,9 @@ async fn main() -> Result<()> {
     // Get script content
     let script = match (&cli.script, &cli.script_file) {
         (Some(s), None) => s.clone(),
-        (None, Some(path)) => {
-            tokio::fs::read_to_string(path)
-                .await
-                .context(format!("Failed to read script file: {}", path.display()))?
-        }
+        (None, Some(path)) => tokio::fs::read_to_string(path)
+            .await
+            .context(format!("Failed to read script file: {}", path.display()))?,
         (Some(_), Some(_)) => bail!("Cannot specify both --script and --script-file"),
         (None, None) => bail!("Specify either --script or --script-file"),
     };
@@ -216,7 +223,8 @@ async fn main() -> Result<()> {
         script_file: None,
         error_policy: cli.error_policy,
     };
-    let transform = RhaiTransform::new(&config, enrichment).context("Failed to create transform")?;
+    let transform =
+        RhaiTransform::new(&config, enrichment).context("Failed to create transform")?;
 
     // Process input
     let mut stats = TransformStats::default();
@@ -328,7 +336,7 @@ fn json_line_to_batch(line: &str) -> Result<Arc<RecordBatch>> {
         .with_batch_size(1)
         .build(std::io::Cursor::new(line.as_bytes()))?;
 
-    for batch_result in reader {
+    if let Some(batch_result) = reader.into_iter().next() {
         let batch = batch_result?;
         return Ok(Arc::new(batch));
     }

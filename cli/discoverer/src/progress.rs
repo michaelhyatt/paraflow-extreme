@@ -1,8 +1,8 @@
 //! Progress reporting for pf-discoverer.
 
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 

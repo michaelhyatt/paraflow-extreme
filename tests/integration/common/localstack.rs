@@ -75,21 +75,13 @@ impl LocalStackTestContext {
 
     /// Delete an SQS queue.
     pub async fn delete_queue(&self, queue_url: &str) -> Result<(), aws_sdk_sqs::Error> {
-        self.sqs
-            .delete_queue()
-            .queue_url(queue_url)
-            .send()
-            .await?;
+        self.sqs.delete_queue().queue_url(queue_url).send().await?;
         Ok(())
     }
 
     /// Purge all messages from an SQS queue.
     pub async fn purge_queue(&self, queue_url: &str) -> Result<(), aws_sdk_sqs::Error> {
-        self.sqs
-            .purge_queue()
-            .queue_url(queue_url)
-            .send()
-            .await?;
+        self.sqs.purge_queue().queue_url(queue_url).send().await?;
         // Wait a moment for purge to take effect
         tokio::time::sleep(Duration::from_millis(100)).await;
         Ok(())
@@ -114,6 +106,7 @@ impl LocalStackTestContext {
     }
 
     /// Upload test Parquet data to S3.
+    #[allow(dead_code)]
     pub async fn upload_parquet(
         &self,
         bucket: &str,
@@ -239,6 +232,7 @@ pub fn generate_test_ndjson(num_records: usize) -> String {
 }
 
 /// Generate test Parquet data with the specified number of records.
+#[allow(dead_code)]
 pub fn generate_test_parquet(num_records: usize) -> Vec<u8> {
     use arrow::array::{Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};

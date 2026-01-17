@@ -93,11 +93,8 @@ impl ReaderFactory {
                     config = config.with_endpoint(endpoint);
                 }
 
-                if let (Some(ak), Some(sk)) =
-                    (&self.config.access_key, &self.config.secret_key)
-                {
-                    config =
-                        config.with_credentials(ak, sk, self.config.session_token.clone());
+                if let (Some(ak), Some(sk)) = (&self.config.access_key, &self.config.secret_key) {
+                    config = config.with_credentials(ak, sk, self.config.session_token.clone());
                 }
 
                 let reader = ParquetReader::new(config).await?;
@@ -111,17 +108,13 @@ impl ReaderFactory {
                     config = config.with_endpoint(endpoint);
                 }
 
-                if let (Some(ak), Some(sk)) =
-                    (&self.config.access_key, &self.config.secret_key)
-                {
-                    config =
-                        config.with_credentials(ak, sk, self.config.session_token.clone());
+                if let (Some(ak), Some(sk)) = (&self.config.access_key, &self.config.secret_key) {
+                    config = config.with_credentials(ak, sk, self.config.session_token.clone());
                 }
 
                 let reader = NdjsonReader::new(config).await?;
                 Ok(Arc::new(reader))
-            }
-            // All format variants are handled above
+            } // All format variants are handled above
         }
     }
 }
@@ -193,7 +186,11 @@ impl FormatDispatchReader {
 impl StreamingReader for FormatDispatchReader {
     async fn read_stream(&self, uri: &str) -> Result<pf_traits::BatchStream> {
         let format = Self::guess_format_from_uri(uri);
-        debug!(?format, uri = uri, "Dispatching read to format-specific reader");
+        debug!(
+            ?format,
+            uri = uri,
+            "Dispatching read to format-specific reader"
+        );
         self.reader_for_format(format).read_stream(uri).await
     }
 

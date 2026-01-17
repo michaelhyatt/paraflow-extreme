@@ -6,8 +6,8 @@ use chrono::Utc;
 use pf_error::{PfError, QueueError, Result};
 use pf_traits::{FailureContext, QueueMessage, WorkQueue};
 use std::io::{self, BufRead, BufReader};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tracing::{debug, trace, warn};
 use uuid::Uuid;
 
@@ -78,7 +78,10 @@ impl WorkQueue for StdinSource {
 
         let mut messages = Vec::with_capacity(max);
         let mut reader = self.reader.lock().map_err(|e| {
-            PfError::Queue(QueueError::Receive(format!("Failed to lock stdin reader: {}", e)))
+            PfError::Queue(QueueError::Receive(format!(
+                "Failed to lock stdin reader: {}",
+                e
+            )))
         })?;
 
         for _ in 0..max {

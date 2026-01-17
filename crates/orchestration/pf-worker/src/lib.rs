@@ -40,10 +40,10 @@ pub mod stats;
 pub mod worker;
 
 pub use config::WorkerConfig;
-pub use destination::{create_destination, DestinationType, StatsDestination, StdoutDestination};
+pub use destination::{DestinationType, StatsDestination, StdoutDestination, create_destination};
 pub use pipeline::{Pipeline, ThreadStats};
-pub use reader::{create_reader, FormatDispatchReader, ReaderFactory, ReaderFactoryConfig};
+pub use reader::{FormatDispatchReader, ReaderFactory, ReaderFactoryConfig, create_reader};
 pub use router::WorkRouter;
-pub use source::{SqsSource, SqsSourceConfig, StdinSource, QueueMessage, WorkQueue};
+pub use source::{QueueMessage, SqsSource, SqsSourceConfig, StdinSource, WorkQueue};
 pub use stats::WorkerStats;
 pub use worker::Worker;

@@ -3,12 +3,11 @@
 use anyhow::Result;
 use aws_config::BehaviorVersion;
 use aws_credential_types::provider::ProvideCredentials;
+use pf_traits::BatchIndexer;
 use pf_worker::{
     FormatDispatchReader, ReaderFactoryConfig, SqsSource, SqsSourceConfig, StatsDestination,
-    StdinSource, StdoutDestination, Worker, WorkerConfig,
-    destination::OutputFormat,
+    StdinSource, StdoutDestination, Worker, WorkerConfig, destination::OutputFormat,
 };
-use pf_traits::BatchIndexer;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::info;

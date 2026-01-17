@@ -8,7 +8,7 @@ use aws_sdk_s3::Client as S3Client;
 use pf_enrichment::EnrichmentRegistry;
 use pf_error::{ReaderError, Result, TransformError};
 use pf_traits::Transform;
-use rhai::{Dynamic, Engine, Map, Scope, AST};
+use rhai::{AST, Dynamic, Engine, Map, Scope};
 use std::path::Path;
 use std::sync::Arc;
 use tracing::{debug, trace, warn};
@@ -199,7 +199,10 @@ impl Transform for RhaiTransform {
             scope.push("record", record.clone());
 
             // Execute script
-            match self.engine.eval_ast_with_scope::<Dynamic>(&mut scope, &self.ast) {
+            match self
+                .engine
+                .eval_ast_with_scope::<Dynamic>(&mut scope, &self.ast)
+            {
                 Ok(result) => {
                     if result.is_unit() {
                         results.push(None);
@@ -223,24 +226,22 @@ impl Transform for RhaiTransform {
                         }
                     }
                 }
-                Err(e) => {
-                    match self.error_policy {
-                        ErrorPolicy::Drop => {
-                            debug!(row = row_idx, error = %e, "Script error, dropping record");
-                            results.push(None);
-                        }
-                        ErrorPolicy::Fail => {
-                            return Err(TransformError::Execution(format!(
-                                "Transform failed at row {row_idx}: {e}"
-                            ))
-                            .into());
-                        }
-                        ErrorPolicy::Passthrough => {
-                            debug!(row = row_idx, error = %e, "Script error, passing through original");
-                            results.push(self.dynamic_to_map(record));
-                        }
+                Err(e) => match self.error_policy {
+                    ErrorPolicy::Drop => {
+                        debug!(row = row_idx, error = %e, "Script error, dropping record");
+                        results.push(None);
                     }
-                }
+                    ErrorPolicy::Fail => {
+                        return Err(TransformError::Execution(format!(
+                            "Transform failed at row {row_idx}: {e}"
+                        ))
+                        .into());
+                    }
+                    ErrorPolicy::Passthrough => {
+                        debug!(row = row_idx, error = %e, "Script error, passing through original");
+                        results.push(self.dynamic_to_map(record));
+                    }
+                },
             }
         }
 
@@ -274,9 +275,8 @@ async fn load_script_from_file(path: &str) -> Result<String> {
 }
 
 async fn load_script_from_s3(uri: &str, s3_client: Option<&S3Client>) -> Result<String> {
-    let client = s3_client.ok_or_else(|| {
-        ReaderError::S3Error("S3 client not provided for S3 URI".to_string())
-    })?;
+    let client = s3_client
+        .ok_or_else(|| ReaderError::S3Error("S3 client not provided for S3 URI".to_string()))?;
 
     let uri = uri
         .strip_prefix("s3://")
@@ -322,7 +322,9 @@ mod tests {
         ]));
 
         let ids: Vec<i64> = (0..rows as i64).collect();
-        let names: Vec<&str> = (0..rows).map(|i| if i % 2 == 0 { "alice" } else { "bob" }).collect();
+        let names: Vec<&str> = (0..rows)
+            .map(|i| if i % 2 == 0 { "alice" } else { "bob" })
+            .collect();
         let levels: Vec<Option<&str>> = (0..rows)
             .map(|i| match i % 3 {
                 0 => Some("DEBUG"),
