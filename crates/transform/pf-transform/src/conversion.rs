@@ -174,10 +174,7 @@ pub fn arrow_value_to_dynamic(array: &ArrayRef, idx: usize) -> Result<Dynamic> {
 ///
 /// Uses the first non-empty map to determine column types.
 /// New columns are inferred based on the Rhai Dynamic type.
-pub fn infer_schema_from_maps(
-    results: &[&Map],
-    original_schema: &SchemaRef,
-) -> Result<Schema> {
+pub fn infer_schema_from_maps(results: &[&Map], original_schema: &SchemaRef) -> Result<Schema> {
     if results.is_empty() {
         return Ok(Schema::new(original_schema.fields().to_vec()));
     }
@@ -265,22 +262,25 @@ fn build_arrow_columns(results: &[&Map], schema: &Schema) -> Result<Vec<ArrayRef
 }
 
 /// Builds a single Arrow column from Rhai maps.
-fn build_arrow_column(results: &[&Map], field_name: &str, data_type: &DataType) -> Result<ArrayRef> {
+fn build_arrow_column(
+    results: &[&Map],
+    field_name: &str,
+    data_type: &DataType,
+) -> Result<ArrayRef> {
     match data_type {
         DataType::Boolean => {
             let values: Vec<Option<bool>> = results
                 .iter()
                 .map(|map| {
-                    map.get(field_name)
-                        .and_then(|v| {
-                            if v.is_unit() {
-                                None
-                            } else if v.is_bool() {
-                                Some(v.as_bool().unwrap())
-                            } else {
-                                None
-                            }
-                        })
+                    map.get(field_name).and_then(|v| {
+                        if v.is_unit() {
+                            None
+                        } else if v.is_bool() {
+                            Some(v.as_bool().unwrap())
+                        } else {
+                            None
+                        }
+                    })
                 })
                 .collect();
             Ok(Arc::new(BooleanArray::from(values)))
@@ -289,16 +289,15 @@ fn build_arrow_column(results: &[&Map], field_name: &str, data_type: &DataType) 
             let values: Vec<Option<i64>> = results
                 .iter()
                 .map(|map| {
-                    map.get(field_name)
-                        .and_then(|v| {
-                            if v.is_unit() {
-                                None
-                            } else if v.is_int() {
-                                Some(v.as_int().unwrap())
-                            } else {
-                                None
-                            }
-                        })
+                    map.get(field_name).and_then(|v| {
+                        if v.is_unit() {
+                            None
+                        } else if v.is_int() {
+                            Some(v.as_int().unwrap())
+                        } else {
+                            None
+                        }
+                    })
                 })
                 .collect();
             Ok(Arc::new(Int64Array::from(values)))
@@ -307,18 +306,17 @@ fn build_arrow_column(results: &[&Map], field_name: &str, data_type: &DataType) 
             let values: Vec<Option<f64>> = results
                 .iter()
                 .map(|map| {
-                    map.get(field_name)
-                        .and_then(|v| {
-                            if v.is_unit() {
-                                None
-                            } else if v.is_float() {
-                                Some(v.as_float().unwrap())
-                            } else if v.is_int() {
-                                Some(v.as_int().unwrap() as f64)
-                            } else {
-                                None
-                            }
-                        })
+                    map.get(field_name).and_then(|v| {
+                        if v.is_unit() {
+                            None
+                        } else if v.is_float() {
+                            Some(v.as_float().unwrap())
+                        } else if v.is_int() {
+                            Some(v.as_int().unwrap() as f64)
+                        } else {
+                            None
+                        }
+                    })
                 })
                 .collect();
             Ok(Arc::new(Float64Array::from(values)))
@@ -455,11 +453,7 @@ mod tests {
 
     #[test]
     fn test_infer_schema_new_columns() {
-        let original_schema = Arc::new(Schema::new(vec![Field::new(
-            "id",
-            DataType::Int64,
-            false,
-        )]));
+        let original_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
 
         let mut map = Map::new();
         map.insert("id".into(), Dynamic::from(1_i64));

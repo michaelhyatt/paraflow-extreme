@@ -333,9 +333,7 @@ impl PartitionFilters {
 
         // Check for time range filter
         if input.starts_with("_time=") && input.contains("..") {
-            let range_str = input
-                .strip_prefix("_time=")
-                .expect("checked prefix above");
+            let range_str = input.strip_prefix("_time=").expect("checked prefix above");
             self.time_filter = Some(TimeRangeFilter::parse(range_str)?);
         } else {
             let filter = PartitionFilter::parse(input)?;
@@ -601,7 +599,9 @@ mod tests {
     #[test]
     fn test_partition_filters_parse_and_add_time_filter() {
         let mut filters = PartitionFilters::new();
-        filters.parse_and_add("_time=2022-01-01..2022-01-05").unwrap();
+        filters
+            .parse_and_add("_time=2022-01-01..2022-01-05")
+            .unwrap();
 
         assert!(!filters.has_filter("_time")); // _time is not a regular filter
         assert!(filters.time_filter().is_some());
@@ -611,7 +611,9 @@ mod tests {
     #[test]
     fn test_partition_filters_parse_and_add_both() {
         let mut filters = PartitionFilters::new();
-        filters.parse_and_add("_time=2022-01-01..2022-01-05").unwrap();
+        filters
+            .parse_and_add("_time=2022-01-01..2022-01-05")
+            .unwrap();
         filters.parse_and_add("element=cpu,memory").unwrap();
 
         assert!(filters.has_filter("element"));

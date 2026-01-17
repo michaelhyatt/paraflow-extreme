@@ -35,11 +35,26 @@ async fn main() -> anyhow::Result<()> {
     if !dry_run {
         eprintln!();
         eprintln!("Discovery completed:");
-        eprintln!("  Files discovered:   {}", format_number(stats.files_discovered as u64));
-        eprintln!("  Files filtered:     {}", format_number(stats.files_filtered as u64));
-        eprintln!("  Files output:       {}", format_number(stats.files_output as u64));
-        eprintln!("  Bytes discovered:   {}", format_bytes(stats.bytes_discovered));
-        eprintln!("  Errors:             {}", format_number(stats.errors.len() as u64));
+        eprintln!(
+            "  Files discovered:   {}",
+            format_number(stats.files_discovered as u64)
+        );
+        eprintln!(
+            "  Files filtered:     {}",
+            format_number(stats.files_filtered as u64)
+        );
+        eprintln!(
+            "  Files output:       {}",
+            format_number(stats.files_output as u64)
+        );
+        eprintln!(
+            "  Bytes discovered:   {}",
+            format_bytes(stats.bytes_discovered)
+        );
+        eprintln!(
+            "  Errors:             {}",
+            format_number(stats.errors.len() as u64)
+        );
 
         if let Some(duration) = stats.duration() {
             let secs = duration.num_milliseconds() as f64 / 1000.0;

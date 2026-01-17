@@ -92,8 +92,7 @@ impl Filter for CompositeFilter {
         if self.filters.is_empty() {
             "composite(empty)".to_string()
         } else {
-            let descriptions: Vec<String> =
-                self.filters.iter().map(|f| f.description()).collect();
+            let descriptions: Vec<String> = self.filters.iter().map(|f| f.description()).collect();
             format!("composite({})", descriptions.join(" AND "))
         }
     }
@@ -239,8 +238,8 @@ mod tests {
 
     #[test]
     fn test_composite_debug() {
-        let filter = CompositeFilter::new()
-            .with_filter(Box::new(PatternFilter::new("*.parquet").unwrap()));
+        let filter =
+            CompositeFilter::new().with_filter(Box::new(PatternFilter::new("*.parquet").unwrap()));
 
         let debug_str = format!("{:?}", filter);
         assert!(debug_str.contains("CompositeFilter"));

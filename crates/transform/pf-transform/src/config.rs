@@ -94,8 +94,7 @@ mod tests {
 
     #[test]
     fn test_config_serde() {
-        let config = TransformConfig::with_script("record")
-            .with_error_policy(ErrorPolicy::Fail);
+        let config = TransformConfig::with_script("record").with_error_policy(ErrorPolicy::Fail);
 
         let json = serde_json::to_string(&config).unwrap();
         let parsed: TransformConfig = serde_json::from_str(&json).unwrap();

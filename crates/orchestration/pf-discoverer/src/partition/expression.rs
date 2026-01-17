@@ -414,8 +414,11 @@ impl PartitioningExpression {
                             new_prefix.push('/');
                         }
                         new_prefix.push_str(value);
-                        all_prefixes
-                            .extend(self.enumerate_prefixes(filters, segment_idx + 1, new_prefix));
+                        all_prefixes.extend(self.enumerate_prefixes(
+                            filters,
+                            segment_idx + 1,
+                            new_prefix,
+                        ));
                     }
                     all_prefixes
                 } else {
@@ -625,8 +628,16 @@ mod tests {
 
         assert!(result.variables_to_discover.is_empty());
         assert_eq!(result.static_prefixes.len(), 2);
-        assert!(result.static_prefixes.contains(&"logs/nginx/2024/".to_string()));
-        assert!(result.static_prefixes.contains(&"logs/nginx/2025/".to_string()));
+        assert!(
+            result
+                .static_prefixes
+                .contains(&"logs/nginx/2024/".to_string())
+        );
+        assert!(
+            result
+                .static_prefixes
+                .contains(&"logs/nginx/2025/".to_string())
+        );
     }
 
     #[test]
@@ -639,10 +650,26 @@ mod tests {
         let result = expr.generate_prefixes(&filters);
 
         assert_eq!(result.static_prefixes.len(), 4);
-        assert!(result.static_prefixes.contains(&"logs/nginx/2024/".to_string()));
-        assert!(result.static_prefixes.contains(&"logs/nginx/2025/".to_string()));
-        assert!(result.static_prefixes.contains(&"logs/apache/2024/".to_string()));
-        assert!(result.static_prefixes.contains(&"logs/apache/2025/".to_string()));
+        assert!(
+            result
+                .static_prefixes
+                .contains(&"logs/nginx/2024/".to_string())
+        );
+        assert!(
+            result
+                .static_prefixes
+                .contains(&"logs/nginx/2025/".to_string())
+        );
+        assert!(
+            result
+                .static_prefixes
+                .contains(&"logs/apache/2024/".to_string())
+        );
+        assert!(
+            result
+                .static_prefixes
+                .contains(&"logs/apache/2025/".to_string())
+        );
     }
 
     #[test]
@@ -733,14 +760,18 @@ mod tests {
         assert_eq!(TimeFormatSpec::new("%Y").format_date(&date), "2022");
         assert_eq!(TimeFormatSpec::new("%m").format_date(&date), "01");
         assert_eq!(TimeFormatSpec::new("%d").format_date(&date), "15");
-        assert_eq!(TimeFormatSpec::new("%Y-%m-%d").format_date(&date), "2022-01-15");
+        assert_eq!(
+            TimeFormatSpec::new("%Y-%m-%d").format_date(&date),
+            "2022-01-15"
+        );
     }
 
     // Time format parsing tests
 
     #[test]
     fn test_parse_time_format_expression() {
-        let expr = PartitioningExpression::parse("data/YEAR=${_time:%Y}/MONTH=${_time:%m}/").unwrap();
+        let expr =
+            PartitioningExpression::parse("data/YEAR=${_time:%Y}/MONTH=${_time:%m}/").unwrap();
 
         assert!(expr.has_time_formats());
         assert!(expr.variables().is_empty()); // _time formats are not regular variables
@@ -757,8 +788,9 @@ mod tests {
     #[test]
     fn test_parse_mixed_expression() {
         let expr = PartitioningExpression::parse(
-            "data/${region}/YEAR=${_time:%Y}/MONTH=${_time:%m}/${element}/"
-        ).unwrap();
+            "data/${region}/YEAR=${_time:%Y}/MONTH=${_time:%m}/${element}/",
+        )
+        .unwrap();
 
         assert!(expr.has_time_formats());
         assert_eq!(expr.variables(), vec!["region", "element"]);
@@ -777,7 +809,8 @@ mod tests {
 
     #[test]
     fn test_matches_with_time_format() {
-        let expr = PartitioningExpression::parse("data/YEAR=${_time:%Y}/MONTH=${_time:%m}/").unwrap();
+        let expr =
+            PartitioningExpression::parse("data/YEAR=${_time:%Y}/MONTH=${_time:%m}/").unwrap();
 
         assert!(expr.matches("data/YEAR=2022/MONTH=01/"));
         assert!(expr.matches("data/YEAR=2022/MONTH=01/file.parquet"));
@@ -787,11 +820,12 @@ mod tests {
 
     #[test]
     fn test_extract_values_with_time_format() {
-        let expr = PartitioningExpression::parse(
-            "data/${region}/YEAR=${_time:%Y}/${element}/"
-        ).unwrap();
+        let expr =
+            PartitioningExpression::parse("data/${region}/YEAR=${_time:%Y}/${element}/").unwrap();
 
-        let values = expr.extract_values("data/us-east/YEAR=2022/cpu/file.parquet").unwrap();
+        let values = expr
+            .extract_values("data/us-east/YEAR=2022/cpu/file.parquet")
+            .unwrap();
 
         // Should extract region and element, but not time format
         assert_eq!(values.get("region"), Some(&"us-east".to_string()));

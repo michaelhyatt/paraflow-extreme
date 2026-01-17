@@ -30,15 +30,12 @@ pub async fn load_exact_table(
 ) -> Result<ExactTable> {
     let (headers, records) = load_csv(source, s3_client).await?;
 
-    let key_idx = headers
-        .iter()
-        .position(|h| h == key_field)
-        .ok_or_else(|| {
-            ReaderError::Schema(format!(
-                "Key field '{}' not found in CSV headers: {:?}",
-                key_field, headers
-            ))
-        })?;
+    let key_idx = headers.iter().position(|h| h == key_field).ok_or_else(|| {
+        ReaderError::Schema(format!(
+            "Key field '{}' not found in CSV headers: {:?}",
+            key_field, headers
+        ))
+    })?;
 
     let mut table = ExactTable::new(headers.clone(), key_field.to_string());
 
@@ -66,15 +63,12 @@ pub async fn load_cidr_table(
 ) -> Result<CidrTable> {
     let (headers, records) = load_csv(source, s3_client).await?;
 
-    let key_idx = headers
-        .iter()
-        .position(|h| h == key_field)
-        .ok_or_else(|| {
-            ReaderError::Schema(format!(
-                "Key field '{}' not found in CSV headers: {:?}",
-                key_field, headers
-            ))
-        })?;
+    let key_idx = headers.iter().position(|h| h == key_field).ok_or_else(|| {
+        ReaderError::Schema(format!(
+            "Key field '{}' not found in CSV headers: {:?}",
+            key_field, headers
+        ))
+    })?;
 
     let mut table = CidrTable::new(headers.clone(), key_field.to_string());
     let mut errors = 0;
@@ -146,9 +140,8 @@ async fn load_from_file(path: &str) -> Result<String> {
 }
 
 async fn load_from_s3(uri: &str, s3_client: Option<&S3Client>) -> Result<String> {
-    let client = s3_client.ok_or_else(|| {
-        ReaderError::S3Error("S3 client not provided for S3 URI".to_string())
-    })?;
+    let client = s3_client
+        .ok_or_else(|| ReaderError::S3Error("S3 client not provided for S3 URI".to_string()))?;
 
     let (bucket, key) = parse_s3_uri(uri)?;
 
@@ -194,10 +187,7 @@ fn parse_csv(content: &str) -> Result<(Vec<String>, Vec<csv::StringRecord>)> {
         .map(|s| s.to_string())
         .collect();
 
-    let records: Vec<csv::StringRecord> = reader
-        .records()
-        .filter_map(|r| r.ok())
-        .collect();
+    let records: Vec<csv::StringRecord> = reader.records().filter_map(|r| r.ok()).collect();
 
     Ok((headers, records))
 }

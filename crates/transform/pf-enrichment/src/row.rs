@@ -72,7 +72,11 @@ mod tests {
             "asn".to_string(),
         ]);
         let row = EnrichmentRow::new(
-            vec!["US".to_string(), "New York".to_string(), "15169".to_string()],
+            vec![
+                "US".to_string(),
+                "New York".to_string(),
+                "15169".to_string(),
+            ],
             columns,
         );
 

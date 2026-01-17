@@ -2,13 +2,13 @@
 
 use anyhow::Result;
 use futures::{StreamExt, pin_mut};
+use pf_discoverer::filter::parse_date;
+use pf_discoverer::partition::{PartitionFilters, PartitioningExpression, expand_all_prefixes};
 use pf_discoverer::{
     CompositeFilter, DateFilter, DiscoveredFile, DiscoveryConfig, DiscoveryStats, Filter, Output,
     ParallelConfig, ParallelLister, PatternFilter, S3Config, SizeFilter, SqsConfig, SqsOutput,
     StdoutOutput, create_s3_client,
 };
-use pf_discoverer::filter::parse_date;
-use pf_discoverer::partition::{PartitionFilters, PartitioningExpression, expand_all_prefixes};
 use tracing::{debug, info, warn};
 
 use crate::args::{Cli, DestinationType};
@@ -60,8 +60,7 @@ pub async fn execute(args: Cli) -> Result<DiscoveryStats> {
     let s3_client = create_s3_client(&s3_config).await?;
 
     // Build discovery configuration
-    let config = DiscoveryConfig::new()
-        .with_max_files(args.max_files);
+    let config = DiscoveryConfig::new().with_max_files(args.max_files);
 
     // Build composite filter
     let filter = build_filter(&args)?;
@@ -82,10 +81,9 @@ pub async fn execute(args: Cli) -> Result<DiscoveryStats> {
             run_discovery_with_prefixes(s3_client, &args, output, filter, config, prefixes).await?
         }
         DestinationType::Sqs => {
-            let sqs_queue_url = args
-                .sqs_queue_url
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("--sqs-queue-url is required when destination=sqs"))?;
+            let sqs_queue_url = args.sqs_queue_url.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("--sqs-queue-url is required when destination=sqs")
+            })?;
 
             let mut sqs_config = SqsConfig::new(sqs_queue_url)
                 .with_region(&args.region)
@@ -156,8 +154,8 @@ fn build_filter(args: &Cli) -> Result<CompositeFilter> {
     let mut composite = CompositeFilter::new();
 
     // Add pattern filter
-    let pattern_filter = PatternFilter::new(&args.pattern)
-        .map_err(|e| anyhow::anyhow!("Invalid pattern: {}", e))?;
+    let pattern_filter =
+        PatternFilter::new(&args.pattern).map_err(|e| anyhow::anyhow!("Invalid pattern: {}", e))?;
     composite.add_filter(Box::new(pattern_filter));
 
     // Add size filter if specified
@@ -351,7 +349,10 @@ async fn run_dry_run<F: Filter>(
     // Print dry-run summary
     eprintln!("Dry run results:");
     eprintln!("  Files matching:     {}", stats.files_output);
-    eprintln!("  Bytes total:        {}", format_bytes(stats.bytes_discovered));
+    eprintln!(
+        "  Bytes total:        {}",
+        format_bytes(stats.bytes_discovered)
+    );
 
     if let Some(duration) = stats.duration() {
         let secs = duration.num_milliseconds() as f64 / 1000.0;

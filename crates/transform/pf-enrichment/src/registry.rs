@@ -1,7 +1,7 @@
 //! EnrichmentRegistry - holds all enrichment tables and provides Rhai integration.
 
-use crate::{CidrTable, EnrichmentTableConfig, ExactTable, MatchType};
 use crate::loader::{load_cidr_table, load_exact_table};
+use crate::{CidrTable, EnrichmentTableConfig, ExactTable, MatchType};
 use aws_sdk_s3::Client as S3Client;
 use hashbrown::HashMap;
 use pf_error::Result;
@@ -50,11 +50,13 @@ impl EnrichmentRegistry {
         for config in configs {
             match config.match_type {
                 MatchType::Exact => {
-                    let table = load_exact_table(&config.source, &config.key_field, s3_client).await?;
+                    let table =
+                        load_exact_table(&config.source, &config.key_field, s3_client).await?;
                     registry.add_exact_table(config.name.clone(), table);
                 }
                 MatchType::Cidr => {
-                    let table = load_cidr_table(&config.source, &config.key_field, s3_client).await?;
+                    let table =
+                        load_cidr_table(&config.source, &config.key_field, s3_client).await?;
                     registry.add_cidr_table(config.name.clone(), table);
                 }
             }
@@ -244,13 +246,15 @@ mod tests {
         registry.register_functions(&mut engine);
 
         // Test enrich_exact
-        let result: Dynamic = engine
-            .eval(r#"enrich_exact("users", "alice")"#)
-            .unwrap();
+        let result: Dynamic = engine.eval(r#"enrich_exact("users", "alice")"#).unwrap();
         assert!(result.is_map());
         let map = result.cast::<rhai::Map>();
         assert_eq!(
-            map.get("department").unwrap().clone().into_string().unwrap(),
+            map.get("department")
+                .unwrap()
+                .clone()
+                .into_string()
+                .unwrap(),
             "engineering"
         );
 
@@ -282,16 +286,25 @@ mod tests {
             vec!["user_id".to_string(), "dept".to_string()],
             "user_id".to_string(),
         );
-        users.insert("alice".to_string(), vec!["alice".to_string(), "eng".to_string()]);
-        users.insert("bob".to_string(), vec!["bob".to_string(), "sales".to_string()]);
+        users.insert(
+            "alice".to_string(),
+            vec!["alice".to_string(), "eng".to_string()],
+        );
+        users.insert(
+            "bob".to_string(),
+            vec!["bob".to_string(), "sales".to_string()],
+        );
         registry.add_exact_table("users".to_string(), users);
 
         let mut geo = CidrTable::new(
             vec!["cidr".to_string(), "country".to_string()],
             "cidr".to_string(),
         );
-        geo.insert("10.0.0.0/8", vec!["10.0.0.0/8".to_string(), "PRIVATE".to_string()])
-            .unwrap();
+        geo.insert(
+            "10.0.0.0/8",
+            vec!["10.0.0.0/8".to_string(), "PRIVATE".to_string()],
+        )
+        .unwrap();
         registry.add_cidr_table("geo".to_string(), geo);
 
         let stats = registry.stats();

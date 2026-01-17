@@ -235,11 +235,14 @@ mod tests {
     #[test]
     fn test_expand_prefixes_time_format_daily() {
         let expr = PartitioningExpression::parse(
-            "data/YEAR=${_time:%Y}/MONTH=${_time:%m}/DAY=${_time:%d}/"
-        ).unwrap();
+            "data/YEAR=${_time:%Y}/MONTH=${_time:%m}/DAY=${_time:%d}/",
+        )
+        .unwrap();
 
         let mut filters = PartitionFilters::new();
-        filters.parse_and_add("_time=2022-01-01..2022-01-03").unwrap();
+        filters
+            .parse_and_add("_time=2022-01-01..2022-01-03")
+            .unwrap();
 
         let prefixes = expand_all_prefixes(&expr, &filters).unwrap();
 
@@ -252,12 +255,13 @@ mod tests {
     #[test]
     fn test_expand_prefixes_time_format_monthly_deduplication() {
         // 5-day range with monthly partitioning should produce 1 prefix
-        let expr = PartitioningExpression::parse(
-            "data/YEAR=${_time:%Y}/MONTH=${_time:%m}/"
-        ).unwrap();
+        let expr =
+            PartitioningExpression::parse("data/YEAR=${_time:%Y}/MONTH=${_time:%m}/").unwrap();
 
         let mut filters = PartitionFilters::new();
-        filters.parse_and_add("_time=2022-01-01..2022-01-05").unwrap();
+        filters
+            .parse_and_add("_time=2022-01-01..2022-01-05")
+            .unwrap();
 
         let prefixes = expand_all_prefixes(&expr, &filters).unwrap();
 
@@ -272,7 +276,9 @@ mod tests {
         let expr = PartitioningExpression::parse("data/YEAR=${_time:%Y}/").unwrap();
 
         let mut filters = PartitionFilters::new();
-        filters.parse_and_add("_time=2022-01-01..2022-12-31").unwrap();
+        filters
+            .parse_and_add("_time=2022-01-01..2022-12-31")
+            .unwrap();
 
         let prefixes = expand_all_prefixes(&expr, &filters).unwrap();
 
@@ -286,7 +292,9 @@ mod tests {
         let expr = PartitioningExpression::parse("data/YEAR=${_time:%Y}/").unwrap();
 
         let mut filters = PartitionFilters::new();
-        filters.parse_and_add("_time=2022-12-30..2023-01-02").unwrap();
+        filters
+            .parse_and_add("_time=2022-12-30..2023-01-02")
+            .unwrap();
 
         let prefixes = expand_all_prefixes(&expr, &filters).unwrap();
 
@@ -298,12 +306,14 @@ mod tests {
 
     #[test]
     fn test_expand_prefixes_mixed_time_and_variables() {
-        let expr = PartitioningExpression::parse(
-            "data/YEAR=${_time:%Y}/MONTH=${_time:%m}/${element}/"
-        ).unwrap();
+        let expr =
+            PartitioningExpression::parse("data/YEAR=${_time:%Y}/MONTH=${_time:%m}/${element}/")
+                .unwrap();
 
         let mut filters = PartitionFilters::new();
-        filters.parse_and_add("_time=2022-01-01..2022-01-02").unwrap();
+        filters
+            .parse_and_add("_time=2022-01-01..2022-01-02")
+            .unwrap();
         filters.add_filter("element", &["cpu", "memory"]);
 
         let prefixes = expand_all_prefixes(&expr, &filters).unwrap();

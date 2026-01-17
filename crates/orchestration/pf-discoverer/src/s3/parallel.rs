@@ -109,25 +109,24 @@ impl ParallelLister {
         debug!(prefix_count, "Starting parallel prefix listing");
 
         // Create a stream of prefix listing results
-        let prefix_streams = prefixes.into_iter().map(|prefix| {
-            let client = self.client.clone();
-            let bucket = self.bucket.clone();
-            let semaphore = self.semaphore.clone();
-            let config = self.config.clone();
+        let prefix_streams =
+            prefixes.into_iter().map(|prefix| {
+                let client = self.client.clone();
+                let bucket = self.bucket.clone();
+                let semaphore = self.semaphore.clone();
+                let config = self.config.clone();
 
-            async move {
-                list_prefix_with_semaphore(client, bucket, prefix, semaphore, config).await
-            }
-        });
+                async move {
+                    list_prefix_with_semaphore(client, bucket, prefix, semaphore, config).await
+                }
+            });
 
         // Buffer the streams and flatten results
         stream::iter(prefix_streams)
             .buffer_unordered(self.config.max_parallel_prefixes)
-            .flat_map(|result| {
-                match result {
-                    Ok(objects) => stream::iter(objects.into_iter().map(Ok)).boxed(),
-                    Err(e) => stream::iter(vec![Err(e)]).boxed(),
-                }
+            .flat_map(|result| match result {
+                Ok(objects) => stream::iter(objects.into_iter().map(Ok)).boxed(),
+                Err(e) => stream::iter(vec![Err(e)]).boxed(),
             })
     }
 
@@ -135,9 +134,11 @@ impl ParallelLister {
     ///
     /// Uses ListObjectsV2 with delimiter="/" to find common prefixes.
     pub async fn discover_prefixes(&self, prefix: &str) -> Result<Vec<String>> {
-        let _permit = self.semaphore.acquire().await.map_err(|e| {
-            PfError::Config(format!("Failed to acquire semaphore: {}", e))
-        })?;
+        let _permit = self
+            .semaphore
+            .acquire()
+            .await
+            .map_err(|e| PfError::Config(format!("Failed to acquire semaphore: {}", e)))?;
 
         debug!(prefix = prefix, "Discovering sub-prefixes");
 
@@ -229,9 +230,10 @@ async fn list_prefix_with_semaphore(
         let semaphore = semaphore.clone();
 
         async move {
-            let _permit = semaphore.acquire().await.map_err(|e| {
-                PfError::Config(format!("Failed to acquire semaphore: {}", e))
-            })?;
+            let _permit = semaphore
+                .acquire()
+                .await
+                .map_err(|e| PfError::Config(format!("Failed to acquire semaphore: {}", e)))?;
 
             let mut objects = Vec::new();
             let mut continuation_token: Option<String> = None;
@@ -243,9 +245,10 @@ async fn list_prefix_with_semaphore(
                     req = req.continuation_token(token);
                 }
 
-                let resp = req.send().await.map_err(|e| {
-                    PfError::Config(format!("S3 list objects failed: {}", e))
-                })?;
+                let resp = req
+                    .send()
+                    .await
+                    .map_err(|e| PfError::Config(format!("S3 list objects failed: {}", e)))?;
 
                 if let Some(contents) = resp.contents {
                     for obj in contents {
@@ -256,9 +259,9 @@ async fn list_prefix_with_semaphore(
                             continue;
                         }
 
-                        let last_modified = obj.last_modified.and_then(|t| {
-                            DateTime::from_timestamp(t.secs(), t.subsec_nanos())
-                        });
+                        let last_modified = obj
+                            .last_modified
+                            .and_then(|t| DateTime::from_timestamp(t.secs(), t.subsec_nanos()));
 
                         objects.push(S3Object {
                             key,

@@ -75,21 +75,13 @@ impl LocalStackTestContext {
 
     /// Delete an SQS queue.
     pub async fn delete_queue(&self, queue_url: &str) -> Result<(), aws_sdk_sqs::Error> {
-        self.sqs
-            .delete_queue()
-            .queue_url(queue_url)
-            .send()
-            .await?;
+        self.sqs.delete_queue().queue_url(queue_url).send().await?;
         Ok(())
     }
 
     /// Purge all messages from an SQS queue.
     pub async fn purge_queue(&self, queue_url: &str) -> Result<(), aws_sdk_sqs::Error> {
-        self.sqs
-            .purge_queue()
-            .queue_url(queue_url)
-            .send()
-            .await?;
+        self.sqs.purge_queue().queue_url(queue_url).send().await?;
         // Wait a moment for purge to take effect
         tokio::time::sleep(Duration::from_millis(100)).await;
         Ok(())

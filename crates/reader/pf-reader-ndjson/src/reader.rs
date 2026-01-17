@@ -9,10 +9,10 @@ use arrow_json::ReaderBuilder;
 use async_compression::tokio::bufread::{GzipDecoder, ZstdDecoder};
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
+use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjectPath;
-use object_store::ObjectStore;
 use pf_error::{PfError, ReaderError, Result};
 use pf_traits::{BatchStream, FileMetadata, StreamingReader};
 use pf_types::Batch;
@@ -188,7 +188,10 @@ impl NdjsonReader {
 
         // Double-check in case another thread created it while we waited
         if let Some(store) = cache.get(cache_key) {
-            debug!(cache_key = cache_key, "Using cached object store (after lock)");
+            debug!(
+                cache_key = cache_key,
+                "Using cached object store (after lock)"
+            );
             return Ok(Arc::clone(store));
         }
 
@@ -257,7 +260,10 @@ impl NdjsonReader {
 
             let store = self.get_or_create_store(LOCAL_STORE_KEY)?;
             let path = ObjectPath::from_absolute_path(path_str).map_err(|e| {
-                PfError::Reader(ReaderError::Io(format!("Invalid local path '{}': {}", uri, e)))
+                PfError::Reader(ReaderError::Io(format!(
+                    "Invalid local path '{}': {}",
+                    uri, e
+                )))
             })?;
 
             Ok((store, path))
@@ -315,9 +321,8 @@ impl NdjsonReader {
     /// Count lines in a small file (for metadata).
     /// Only used for local files where we can cheaply read the whole thing.
     fn count_lines_sync(&self, path: &str) -> Result<usize> {
-        let file = std::fs::File::open(path).map_err(|e| {
-            PfError::Reader(ReaderError::Io(format!("Failed to open file: {}", e)))
-        })?;
+        let file = std::fs::File::open(path)
+            .map_err(|e| PfError::Reader(ReaderError::Io(format!("Failed to open file: {}", e))))?;
         let reader = std::io::BufReader::new(file);
         Ok(reader.lines().count())
     }
@@ -359,9 +364,9 @@ impl StreamingReader for NdjsonReader {
         })?;
 
         // Convert to tokio AsyncRead
-        let bytes_stream = byte_stream.into_stream().map(|result| {
-            result.map_err(std::io::Error::other)
-        });
+        let bytes_stream = byte_stream
+            .into_stream()
+            .map(|result| result.map_err(std::io::Error::other));
         let async_read = StreamReader::new(bytes_stream);
 
         // Apply decompression if needed, then buffer
@@ -393,13 +398,8 @@ impl StreamingReader for NdjsonReader {
         let uri_clone = uri.to_string();
 
         // Create a streaming batch producer
-        let batch_stream = NdjsonBatchStream::new(
-            buf_reader,
-            schema,
-            batch_size,
-            uri_clone,
-            initial_lines,
-        );
+        let batch_stream =
+            NdjsonBatchStream::new(buf_reader, schema, batch_size, uri_clone, initial_lines);
 
         Ok(Box::pin(batch_stream))
     }
@@ -432,9 +432,9 @@ impl StreamingReader for NdjsonReader {
         })?;
 
         let compression = Compression::from_uri(uri);
-        let bytes_stream = byte_stream.into_stream().map(|result| {
-            result.map_err(std::io::Error::other)
-        });
+        let bytes_stream = byte_stream
+            .into_stream()
+            .map(|result| result.map_err(std::io::Error::other));
         let async_read = StreamReader::new(bytes_stream);
 
         let buf_reader: Pin<Box<dyn AsyncBufRead + Send>> = match compression {
@@ -495,24 +495,15 @@ impl NdjsonBatchStream {
 
         // Spawn a task to read lines and produce batches
         tokio::spawn(async move {
-            let result = Self::read_all_batches(
-                reader,
-                schema,
-                batch_size,
-                uri,
-                initial_lines,
-                tx,
-            )
-            .await;
+            let result =
+                Self::read_all_batches(reader, schema, batch_size, uri, initial_lines, tx).await;
 
             if let Err(e) = result {
                 tracing::error!(error = %e, "Error in NDJSON batch stream");
             }
         });
 
-        Self {
-            receiver: Some(rx),
-        }
+        Self { receiver: Some(rx) }
     }
 
     async fn read_all_batches(
@@ -541,7 +532,8 @@ impl NdjsonBatchStream {
             line_count += 1;
 
             if line_count >= batch_size {
-                let batch = Self::buffer_to_batch(&schema, &json_buffer, line_count, &uri, batch_index)?;
+                let batch =
+                    Self::buffer_to_batch(&schema, &json_buffer, line_count, &uri, batch_index)?;
                 batch_index += 1;
                 // Clear buffer but keep capacity for reuse
                 json_buffer.clear();
@@ -562,7 +554,13 @@ impl NdjsonBatchStream {
             if bytes_read == 0 {
                 // EOF - flush remaining lines
                 if line_count > 0 {
-                    let batch = Self::buffer_to_batch(&schema, &json_buffer, line_count, &uri, batch_index)?;
+                    let batch = Self::buffer_to_batch(
+                        &schema,
+                        &json_buffer,
+                        line_count,
+                        &uri,
+                        batch_index,
+                    )?;
                     let _ = tx.send(Ok(batch)).await;
                 }
                 break;
@@ -578,7 +576,13 @@ impl NdjsonBatchStream {
                 line_count += 1;
 
                 if line_count >= batch_size {
-                    let batch = Self::buffer_to_batch(&schema, &json_buffer, line_count, &uri, batch_index)?;
+                    let batch = Self::buffer_to_batch(
+                        &schema,
+                        &json_buffer,
+                        line_count,
+                        &uri,
+                        batch_index,
+                    )?;
                     batch_index += 1;
                     // Clear buffer but keep capacity for reuse
                     json_buffer.clear();
@@ -695,8 +699,8 @@ mod tests {
     }
 
     fn create_gzipped_ndjson_file(num_rows: usize) -> NamedTempFile {
-        use flate2::write::GzEncoder;
         use flate2::Compression;
+        use flate2::write::GzEncoder;
 
         let mut file = NamedTempFile::with_suffix(".ndjson.gz").unwrap();
 
@@ -938,7 +942,11 @@ mod tests {
         // Verify cache has one entry for local store
         {
             let cache = reader.store_cache.read().unwrap();
-            assert_eq!(cache.len(), 1, "Cache should have one entry after first read");
+            assert_eq!(
+                cache.len(),
+                1,
+                "Cache should have one entry after first read"
+            );
             assert!(
                 cache.contains_key(super::LOCAL_STORE_KEY),
                 "Cache should contain local store key"

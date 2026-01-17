@@ -2,8 +2,8 @@
 
 use futures::future::join_all;
 use pf_traits::QueueMessage;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::mpsc;
 use tracing::{debug, trace};
 
@@ -26,7 +26,10 @@ pub struct WorkRouter {
 
 impl WorkRouter {
     /// Create a new work router with the specified number of workers and buffer size.
-    pub fn new(num_workers: usize, buffer_size: usize) -> (Self, Vec<mpsc::Receiver<QueueMessage>>) {
+    pub fn new(
+        num_workers: usize,
+        buffer_size: usize,
+    ) -> (Self, Vec<mpsc::Receiver<QueueMessage>>) {
         let mut senders = Vec::with_capacity(num_workers);
         let mut receivers = Vec::with_capacity(num_workers);
 
@@ -206,7 +209,9 @@ mod tests {
     async fn test_router_batch() {
         let (router, mut receivers) = WorkRouter::new(2, 10);
 
-        let messages: Vec<_> = (0..4).map(|i| create_test_message(&format!("batch-{}", i))).collect();
+        let messages: Vec<_> = (0..4)
+            .map(|i| create_test_message(&format!("batch-{}", i)))
+            .collect();
 
         let failed = router.route_batch(messages).await;
         assert!(failed.is_empty());

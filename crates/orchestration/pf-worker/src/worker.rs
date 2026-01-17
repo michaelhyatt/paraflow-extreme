@@ -7,8 +7,8 @@ use crate::source::{QueueMessage, WorkQueue};
 use crate::stats::{StatsSnapshot, WorkerStats};
 use pf_error::{ErrorCategory, Result};
 use pf_traits::{BatchIndexer, FailureContext, StreamingReader};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -68,10 +68,8 @@ impl<S: WorkQueue + 'static, R: StreamingReader + 'static> Worker<S, R> {
         );
 
         // Create the work router
-        let (router, receivers) = WorkRouter::new(
-            self.config.thread_count,
-            self.config.channel_buffer,
-        );
+        let (router, receivers) =
+            WorkRouter::new(self.config.thread_count, self.config.channel_buffer);
         let router = Arc::new(router);
 
         // Create cancellation token for graceful shutdown
@@ -97,7 +95,16 @@ impl<S: WorkQueue + 'static, R: StreamingReader + 'static> Worker<S, R> {
             let status = worker_statuses[thread_id].clone();
 
             let handle = tokio::spawn(async move {
-                worker_thread(thread_id as u32, rx, pipeline, source, max_retries, cancel_token, status).await;
+                worker_thread(
+                    thread_id as u32,
+                    rx,
+                    pipeline,
+                    source,
+                    max_retries,
+                    cancel_token,
+                    status,
+                )
+                .await;
             });
             worker_handles.push(handle);
         }
@@ -435,15 +442,15 @@ mod tests {
     use super::*;
     use crate::destination::StatsDestination;
     use crate::source::StdinSource;
+    use arrow::array::Int64Array;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
     use async_trait::async_trait;
     use chrono::Utc;
     use futures::stream;
     use pf_traits::{BatchStream, FileMetadata};
     use pf_types::{Batch, DestinationConfig, FileFormat, WorkItem};
     use std::io::Cursor;
-    use arrow::array::Int64Array;
-    use arrow::datatypes::{DataType, Field, Schema};
-    use arrow::record_batch::RecordBatch;
 
     struct MockReader;
 
@@ -453,11 +460,9 @@ mod tests {
             // Return a single batch with 10 records
             let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
             let ids: Vec<i64> = (0..10).collect();
-            let record_batch = RecordBatch::try_new(
-                schema.clone(),
-                vec![Arc::new(Int64Array::from(ids))],
-            )
-            .unwrap();
+            let record_batch =
+                RecordBatch::try_new(schema.clone(), vec![Arc::new(Int64Array::from(ids))])
+                    .unwrap();
 
             let batch = Batch::new(record_batch, "test.parquet", 0);
 

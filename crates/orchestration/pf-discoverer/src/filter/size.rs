@@ -207,7 +207,9 @@ mod tests {
         let filter_max = SizeFilter::new().with_max_size(1024 * 1024);
         assert!(filter_max.description().contains("max="));
 
-        let filter_both = SizeFilter::new().with_min_size(1024).with_max_size(1024 * 1024);
+        let filter_both = SizeFilter::new()
+            .with_min_size(1024)
+            .with_max_size(1024 * 1024);
         assert!(filter_both.description().contains("min="));
         assert!(filter_both.description().contains("max="));
     }

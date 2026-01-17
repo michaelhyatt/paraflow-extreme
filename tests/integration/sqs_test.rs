@@ -3,7 +3,7 @@
 //! These tests verify that the SqsSource implementation works correctly
 //! with a real SQS queue (via LocalStack).
 
-use crate::common::{generate_test_ndjson, LocalStackTestContext};
+use crate::common::{LocalStackTestContext, generate_test_ndjson};
 use chrono::Utc;
 use pf_traits::{FailureContext, WorkQueue};
 use pf_types::{DestinationConfig, FileFormat, WorkItem};
@@ -61,7 +61,10 @@ async fn test_sqs_source_receive_messages() {
     let messages = source.receive_batch(10).await.unwrap().unwrap();
 
     assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].work_item.file_uri, "s3://test-bucket/file1.parquet");
+    assert_eq!(
+        messages[0].work_item.file_uri,
+        "s3://test-bucket/file1.parquet"
+    );
     assert_eq!(messages[0].work_item.job_id, "test-job");
 
     // Ack the message
@@ -88,8 +91,7 @@ async fn test_sqs_source_discovered_file_format() {
     let discovered = r#"{"uri":"s3://bucket/data.ndjson","size_bytes":2048,"last_modified":"2024-01-01T00:00:00Z"}"#;
     ctx.send_message(&queue_url, discovered).await.unwrap();
 
-    let config = SqsSourceConfig::new(&queue_url)
-        .with_wait_time(1);
+    let config = SqsSourceConfig::new(&queue_url).with_wait_time(1);
 
     let source = SqsSource::from_config_with_endpoint(config, &ctx.endpoint, &ctx.region)
         .await
@@ -146,7 +148,10 @@ async fn test_sqs_source_nack_returns_to_queue() {
     // Message should be receivable again
     let messages2 = source.receive_batch(10).await.unwrap().unwrap();
     assert_eq!(messages2.len(), 1);
-    assert_eq!(messages2[0].work_item.file_uri, "s3://test-bucket/file.parquet");
+    assert_eq!(
+        messages2[0].work_item.file_uri,
+        "s3://test-bucket/file.parquet"
+    );
 
     // Clean up
     source.ack(&messages2[0].receipt_handle).await.unwrap();

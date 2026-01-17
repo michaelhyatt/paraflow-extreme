@@ -184,7 +184,10 @@ mod tests {
         assert_eq!(config.channel_buffer, 100);
         assert_eq!(config.max_retries, 3);
         assert_eq!(config.shutdown_timeout, Duration::from_secs(30));
-        assert_eq!(config.accumulator_threshold_bytes, DEFAULT_ACCUMULATOR_THRESHOLD_BYTES);
+        assert_eq!(
+            config.accumulator_threshold_bytes,
+            DEFAULT_ACCUMULATOR_THRESHOLD_BYTES
+        );
         assert!(config.accumulator_threshold_records.is_none());
     }
 
@@ -205,7 +208,10 @@ mod tests {
         assert_eq!(config.channel_buffer, 50);
         assert_eq!(config.max_retries, 5);
         assert_eq!(config.region, "eu-west-1");
-        assert_eq!(config.s3_endpoint, Some("http://localhost:4566".to_string()));
+        assert_eq!(
+            config.s3_endpoint,
+            Some("http://localhost:4566".to_string())
+        );
         assert_eq!(config.accumulator_threshold_bytes, 15 * 1024 * 1024);
         assert_eq!(config.accumulator_threshold_records, Some(100_000));
     }

@@ -9,11 +9,11 @@
 //! Both implement the unified `WorkQueue` trait from pf-traits, providing
 //! a consistent interface for the worker regardless of the underlying source.
 
-mod stdin;
 mod sqs;
+mod stdin;
 
-pub use stdin::StdinSource;
 pub use sqs::{SqsSource, SqsSourceConfig};
+pub use stdin::StdinSource;
 
 // Re-export WorkQueue and related types from pf-traits for convenience
 pub use pf_traits::{FailureContext, QueueMessage, WorkQueue};
@@ -124,13 +124,31 @@ mod tests {
 
     #[test]
     fn test_guess_format_from_uri() {
-        assert_eq!(guess_format_from_uri("s3://bucket/file.parquet"), FileFormat::Parquet);
-        assert_eq!(guess_format_from_uri("s3://bucket/file.pq"), FileFormat::Parquet);
-        assert_eq!(guess_format_from_uri("s3://bucket/file.ndjson"), FileFormat::NdJson);
-        assert_eq!(guess_format_from_uri("s3://bucket/file.jsonl"), FileFormat::NdJson);
-        assert_eq!(guess_format_from_uri("s3://bucket/file.json"), FileFormat::NdJson);
+        assert_eq!(
+            guess_format_from_uri("s3://bucket/file.parquet"),
+            FileFormat::Parquet
+        );
+        assert_eq!(
+            guess_format_from_uri("s3://bucket/file.pq"),
+            FileFormat::Parquet
+        );
+        assert_eq!(
+            guess_format_from_uri("s3://bucket/file.ndjson"),
+            FileFormat::NdJson
+        );
+        assert_eq!(
+            guess_format_from_uri("s3://bucket/file.jsonl"),
+            FileFormat::NdJson
+        );
+        assert_eq!(
+            guess_format_from_uri("s3://bucket/file.json"),
+            FileFormat::NdJson
+        );
         // Unknown extension defaults to Parquet
-        assert_eq!(guess_format_from_uri("s3://bucket/file.unknown"), FileFormat::Parquet);
+        assert_eq!(
+            guess_format_from_uri("s3://bucket/file.unknown"),
+            FileFormat::Parquet
+        );
     }
 
     #[test]
