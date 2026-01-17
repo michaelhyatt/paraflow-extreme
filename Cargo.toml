@@ -12,6 +12,7 @@ members = [
     "cli/common",
     "cli/discoverer",
     "cli/worker",
+    "cli/transform",
     "tests/integration",
 ]
 
