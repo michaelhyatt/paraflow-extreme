@@ -1,0 +1,29 @@
+# Build artifacts
+target/
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+doc/
+
+# Testing directory (contains local test data)
+testing/
+
+# Environment files (may contain secrets)
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude
+.claude/
+
+# OS files
+.DS_Store
+Thumbs.db

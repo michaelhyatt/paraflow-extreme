@@ -1,0 +1,74 @@
+services:
+  localstack:
+    image: localstack/localstack:4.0
+    container_name: paraflow-localstack
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=s3,sqs
+      - DEBUG=${LOCALSTACK_DEBUG:-0}
+      - AWS_DEFAULT_REGION=us-east-1
+    volumes:
+      - localstack_data:/var/lib/localstack
+      - ./docker/init-localstack:/etc/localstack/init/ready.d
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  discoverer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["pf-discoverer"]
+    depends_on:
+      localstack:
+        condition: service_healthy
+    environment:
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - PF_S3_BUCKET=${S3_BUCKET:-test-bucket}
+      - PF_S3_PREFIX=${S3_PREFIX:-}
+      - PF_S3_ENDPOINT=http://localstack:4566
+      - PF_SQS_ENDPOINT=http://localstack:4566
+      - PF_SQS_QUEUE_URL=http://localstack:4566/000000000000/work-queue
+    command:
+      - --destination=sqs
+      - --pattern=${DISCOVERY_PATTERN:-*}
+      - --concurrency=${DISCOVERY_CONCURRENCY:-10}
+      - --log-level=${LOG_LEVEL:-info}
+      - --no-imds
+      - --progress
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      localstack:
+        condition: service_healthy
+      discoverer:
+        condition: service_started
+    environment:
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - PF_S3_ENDPOINT=http://localstack:4566
+      - PF_SQS_ENDPOINT=http://localstack:4566
+      - PF_SQS_QUEUE_URL=http://localstack:4566/000000000000/work-queue
+    command:
+      - --input=sqs
+      - --destination=stats
+      - --threads=${WORKER_THREADS:-4}
+      - --batch-size=${WORKER_BATCH_SIZE:-10000}
+      - --log-level=${LOG_LEVEL:-info}
+      - --no-imds
+      - --progress
+      - --sqs-drain
+    deploy:
+      replicas: ${WORKER_REPLICAS:-3}
+
+volumes:
+  localstack_data:
