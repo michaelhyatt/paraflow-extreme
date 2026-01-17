@@ -90,7 +90,9 @@ cargo run -p pf-worker-cli -- \
 
 ### CLI Options
 
-Run `pf-discoverer --help` and `pf-worker --help` for full options. Key features include:
+The CLI packages are `pf-discoverer-cli` and `pf-worker-cli`. When installed via `cargo install`, they produce binaries named `pf-discoverer` and `pf-worker` respectively.
+
+Run `pf-discoverer --help` and `pf-worker --help` (or `cargo run -p pf-discoverer-cli -- --help`) for full options. Key features include:
 - Partitioning expressions: `--partitioning 'data/YEAR=${_time:%Y}/'`
 - Time-based filtering: `--filter "_time=2024-01-01..2024-01-31"`
 - Glob patterns: `--pattern "*.parquet"`
