@@ -50,6 +50,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -63,10 +66,12 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build and push
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          VERSION: ${{ needs.release.outputs.version }}
-        run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$VERSION \
-                       -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY --all-tags
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ needs.release.outputs.version }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
