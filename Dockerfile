@@ -19,7 +19,33 @@ COPY tests/ tests/
 # Build release binaries
 RUN cargo build --release -p pf-discoverer-cli -p pf-worker-cli
 
-# Stage 2: Runtime
+# Stage 2: Discoverer target
+FROM debian:bookworm-slim AS discoverer
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/target/release/pf-discoverer /usr/local/bin/
+
+ENV RUST_BACKTRACE=1
+EXPOSE 9090
+ENTRYPOINT ["pf-discoverer"]
+
+# Stage 3: Worker target
+FROM debian:bookworm-slim AS worker
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/target/release/pf-worker /usr/local/bin/
+
+ENV RUST_BACKTRACE=1
+EXPOSE 9090
+ENTRYPOINT ["pf-worker"]
+
+# Stage 4: Combined (default, backwards compatible)
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y \
