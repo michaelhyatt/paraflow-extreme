@@ -1,0 +1,46 @@
+[package]
+name = "pf-transform-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "CLI tool for testing Rhai transforms"
+
+[[bin]]
+name = "pf-transform"
+path = "src/main.rs"
+
+[dependencies]
+# Internal crates
+pf-transform = { path = "../../crates/transform/pf-transform" }
+pf-enrichment = { path = "../../crates/transform/pf-enrichment" }
+pf-traits = { path = "../../crates/core/pf-traits" }
+pf-error = { path = "../../crates/core/pf-error" }
+
+# Scripting (for validation)
+rhai = { workspace = true }
+
+# CLI
+clap = { workspace = true }
+
+# Arrow and JSON
+arrow = { workspace = true }
+arrow-json = { workspace = true }
+serde_json = { workspace = true }
+
+# Async
+tokio = { workspace = true, features = ["full"] }
+
+# AWS (for S3 loading)
+aws-config = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# I/O
+bytes = { workspace = true }
