@@ -54,10 +54,12 @@ pub struct WorkerConfig {
 
 impl Default for WorkerConfig {
     fn default() -> Self {
+        let thread_count = num_cpus();
         Self {
-            thread_count: num_cpus(),
+            thread_count,
             batch_size: 10_000,
-            channel_buffer: 100,
+            // Adaptive channel buffer: 10 items per thread for optimal throughput
+            channel_buffer: thread_count * 10,
             max_retries: 3,
             shutdown_timeout: Duration::from_secs(30),
             region: "us-east-1".to_string(),
@@ -208,7 +210,8 @@ mod tests {
 
         assert!(config.thread_count >= 1);
         assert_eq!(config.batch_size, 10_000);
-        assert_eq!(config.channel_buffer, 100);
+        // Channel buffer is adaptive: thread_count * 10
+        assert_eq!(config.channel_buffer, config.thread_count * 10);
         assert_eq!(config.max_retries, 3);
         assert_eq!(config.shutdown_timeout, Duration::from_secs(30));
         assert_eq!(
