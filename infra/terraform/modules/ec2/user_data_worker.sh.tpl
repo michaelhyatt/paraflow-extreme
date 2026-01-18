@@ -44,6 +44,39 @@ ECR="${ecr_repository}"
 aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin "$ECR"
 docker pull "${ecr_repository}:${image_tag}"
 
+# Wait for discoverer to populate the queue
+echo "Waiting for discoverer to populate SQS queue..."
+SQS_QUEUE_URL="${sqs_queue_url}"
+MAX_WAIT=300  # 5 minutes max wait for first message
+POLL_INTERVAL=5
+WAITED=0
+
+while [ $WAITED -lt $MAX_WAIT ]; do
+    # Check queue for messages (visible + in-flight)
+    QUEUE_ATTRS=$(aws sqs get-queue-attributes --region $AWS_REGION \
+        --queue-url "$SQS_QUEUE_URL" \
+        --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible \
+        --output json 2>/dev/null || echo '{}')
+
+    VISIBLE=$(echo "$QUEUE_ATTRS" | grep -o '"ApproximateNumberOfMessages"[^,}]*' | grep -o '[0-9]*' || echo "0")
+    IN_FLIGHT=$(echo "$QUEUE_ATTRS" | grep -o '"ApproximateNumberOfMessagesNotVisible"[^,}]*' | grep -o '[0-9]*' || echo "0")
+    TOTAL=$((VISIBLE + IN_FLIGHT))
+
+    if [ "$TOTAL" -gt 0 ]; then
+        echo "Queue has $TOTAL messages (visible=$VISIBLE, in-flight=$IN_FLIGHT) - starting worker"
+        break
+    fi
+
+    echo "Queue empty, waiting for discoverer... ($WAITED/$MAX_WAIT seconds)"
+    sleep $POLL_INTERVAL
+    WAITED=$((WAITED + POLL_INTERVAL))
+done
+
+if [ $WAITED -ge $MAX_WAIT ]; then
+    echo "WARNING: Timed out waiting for messages in queue after $${MAX_WAIT}s"
+    echo "Proceeding anyway - discoverer may have failed or no files matched"
+fi
+
 # Run worker
 echo "Starting pf-worker..."
 WORKER_LOG="/var/log/pf-worker-output.log"

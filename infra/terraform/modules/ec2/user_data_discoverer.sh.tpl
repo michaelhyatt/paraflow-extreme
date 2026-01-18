@@ -38,6 +38,7 @@ docker pull "${ecr_repository}:${image_tag}"
 
 # Run discoverer
 echo "Starting pf-discoverer..."
+DISCOVERER_LOG="/var/log/pf-discoverer-output.log"
 CONTAINER_START=$(date +%s)
 
 docker run --rm --name pf-discoverer -e AWS_REGION=$AWS_REGION \
@@ -49,20 +50,33 @@ docker run --rm --name pf-discoverer -e AWS_REGION=$AWS_REGION \
   --max-files ${max_files} \
 %{ endif ~}
 %{ if partitioning != "" ~}
-  --partitioning "${partitioning}" \
+  --partitioning '${partitioning}' \
 %{ endif ~}
 %{ if filter != "" ~}
-  --filter "${filter}" \
+  --filter '${filter}' \
 %{ endif ~}
-  --region $AWS_REGION --progress --log-level info
+  --region $AWS_REGION --progress --log-level info 2>&1 | tee "$DISCOVERER_LOG"
 
-EXIT_CODE=$?
+EXIT_CODE=$${PIPESTATUS[0]}
 DURATION=$(($(date +%s) - CONTAINER_START))
+
+# Parse discoverer metrics from output
+FILES_DISCOVERED=$(grep -oP 'Discovered \K\d+' "$DISCOVERER_LOG" 2>/dev/null | tail -1 || echo "0")
+FILES_QUEUED=$(grep -oP 'Queued \K\d+' "$DISCOVERER_LOG" 2>/dev/null | tail -1 || echo "0")
+if [ "$FILES_DISCOVERED" = "0" ]; then
+    # Try alternative patterns
+    FILES_DISCOVERED=$(grep -oP '\d+(?= files? discovered)' "$DISCOVERER_LOG" 2>/dev/null | tail -1 || echo "0")
+fi
+if [ "$FILES_QUEUED" = "0" ]; then
+    FILES_QUEUED=$(grep -oP '\d+(?= files? queued)' "$DISCOVERER_LOG" 2>/dev/null | tail -1 || echo "0")
+fi
+
+echo "Discoverer metrics: files_discovered=$FILES_DISCOVERED files_queued=$FILES_QUEUED duration=$${DURATION}s"
 
 # Benchmark metrics
 if [ "$BENCHMARK_MODE" = "true" ]; then
     cat > /var/log/benchmark-metrics.json <<EOF
-{"component":"$COMPONENT","job_id":"$JOB_ID","instance_type":"$(curl -s http://169.254.169.254/latest/meta-data/instance-type)","duration":$DURATION,"status":"$([ $EXIT_CODE -eq 0 ] && echo SUCCESS || echo FAILED)"}
+{"component":"$COMPONENT","job_id":"$JOB_ID","instance_type":"$(curl -s http://169.254.169.254/latest/meta-data/instance-type)","duration":$DURATION,"status":"$([ $EXIT_CODE -eq 0 ] && echo SUCCESS || echo FAILED)","files_discovered":$FILES_DISCOVERED,"files_queued":$FILES_QUEUED}
 EOF
 fi
 

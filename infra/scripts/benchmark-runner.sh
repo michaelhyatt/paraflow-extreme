@@ -90,6 +90,10 @@ echo "  Identity: $AWS_ARN"
 INSTANCE_TYPE="${INSTANCE_TYPE:-t4g.medium}"
 WORKER_THREADS="${WORKER_THREADS:-0}"  # 0 = auto-detect from CPU cores
 BATCH_SIZE="${BATCH_SIZE:-10000}"
+# MAX_FILES: if not set, read from example.tfvars (default to 100 if not found)
+if [ -z "$MAX_FILES" ]; then
+    MAX_FILES=$(grep -E '^max_files\s*=' "$TERRAFORM_DIR/example.tfvars" 2>/dev/null | sed 's/.*=\s*//' | tr -d ' ' || echo "100")
+fi
 MAX_FILES="${MAX_FILES:-100}"
 POLL_INTERVAL="${POLL_INTERVAL:-10}"  # seconds
 MAX_WAIT_TIME="${MAX_WAIT_TIME:-300}"  # 5 minutes max
