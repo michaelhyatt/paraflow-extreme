@@ -222,20 +222,35 @@ impl WorkQueue for SqsSource {
                 // After empty long-poll, verify queue is truly empty
                 // This prevents premature termination when multiple workers are active
                 // and one gets an empty batch while messages are in-flight with others
-                if count >= 1 {
-                    match self.is_queue_empty().await {
-                        Ok(true) => {
-                            info!("Queue drained (verified empty), signaling completion");
+                match self.is_queue_empty().await {
+                    Ok(true) => {
+                        info!("Queue drained (verified empty), signaling completion");
+                        self.stopped.store(true, Ordering::Relaxed);
+                        return Ok(None);
+                    }
+                    Ok(false) => {
+                        // Messages are in-flight with other workers. However, if we've had
+                        // many consecutive empty receives, those workers may have crashed
+                        // and their messages will become visible after visibility timeout.
+                        // With 20s long-poll and 300s visibility timeout, 15+ empty receives
+                        // means we've waited long enough for orphaned messages to reappear.
+                        let max_empty_receives =
+                            (self.config.visibility_timeout / self.config.wait_time_seconds) + 1;
+                        if count >= max_empty_receives as u32 {
+                            warn!(
+                                "Exceeded {} empty receives with in-flight messages, assuming orphaned - exiting",
+                                max_empty_receives
+                            );
                             self.stopped.store(true, Ordering::Relaxed);
                             return Ok(None);
                         }
-                        Ok(false) => {
-                            debug!("Queue has in-flight messages, continuing to poll");
-                            // Don't reset counter - other workers have the messages
-                        }
-                        Err(e) => {
-                            warn!(error = %e, "Failed to check queue status, continuing to poll");
-                        }
+                        debug!(
+                            "Queue has in-flight messages, continuing to poll ({}/{})",
+                            count, max_empty_receives
+                        );
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Failed to check queue status, continuing to poll");
                     }
                 }
             }
