@@ -1,0 +1,112 @@
+# Example Terraform variables for Paraflow deployment
+# Copy this file to example.tfvars and fill in your values
+# NOTE: example.tfvars should NOT be committed to git (contains sensitive config)
+
+# ============================================================================
+# Job Configuration
+# ============================================================================
+job_id      = "my-job-name"
+environment = "dev"  # dev, staging, prod
+
+# ============================================================================
+# Network Configuration
+# ============================================================================
+# VPC ID - leave empty to use default VPC, or specify your VPC ID
+vpc_id = ""  # e.g., "vpc-0123456789abcdef0"
+
+# ============================================================================
+# Source Data Configuration
+# ============================================================================
+source_bucket = "your-source-bucket"
+source_prefix = "path/to/data/"
+file_pattern  = "*.parquet"
+max_files     = 100  # 0 = unlimited
+
+# ============================================================================
+# Docker Image Configuration
+# ============================================================================
+image_tag = "latest"  # Or specific version like "v0.1.0"
+
+# ============================================================================
+# EC2 Instance Types (ARM-based for cost efficiency)
+# ============================================================================
+# See recommendations below for guidance on instance selection
+
+discoverer_instance_type = "t4g.small"  # 2 vCPU, 2GB RAM - $0.0168/hr
+worker_instance_type     = "t4g.medium" # 2 vCPU, 4GB RAM - $0.0336/hr
+
+# ============================================================================
+# Worker Configuration
+# ============================================================================
+worker_threads = 4      # Number of parallel processing threads
+batch_size     = 10000  # Records per batch
+
+# ============================================================================
+# SQS Configuration
+# ============================================================================
+sqs_visibility_timeout = 300  # 5 minutes
+sqs_max_receive_count  = 3    # Retries before DLQ
+
+# ============================================================================
+# CloudWatch Logs
+# ============================================================================
+log_retention_days = 30
+
+# ============================================================================
+# SSH Access (optional, for debugging)
+# ============================================================================
+# Uncomment and configure if you need SSH access to instances
+# enable_ssh      = true
+# ssh_cidr_blocks = ["10.0.0.0/8"]
+# key_name        = "my-key-pair"
+
+# ============================================================================
+# Monitoring and Benchmark Configuration (NEW)
+# ============================================================================
+
+# Enable detailed CloudWatch metrics (CPU, memory, disk, network at 10s intervals)
+# Installs CloudWatch agent on instances - recommended for production and benchmarking
+enable_detailed_monitoring = true
+
+# Bootstrap timeout - increase for larger instances or slow networks
+bootstrap_timeout_seconds = 600  # 10 minutes
+
+# Enable benchmark mode to collect performance metrics
+# Records to /var/log/benchmark-metrics.json on each instance
+benchmark_mode = false
+
+# ============================================================================
+# Instance Type Recommendations
+# ============================================================================
+#
+# T4g (Burstable, Graviton2) - Best for variable workloads
+#   t4g.small   - 2 vCPU, 2GB RAM  - $0.0168/hr
+#   t4g.medium  - 2 vCPU, 4GB RAM  - $0.0336/hr
+#   t4g.large   - 2 vCPU, 8GB RAM  - $0.0672/hr
+#   t4g.xlarge  - 4 vCPU, 16GB RAM - $0.1344/hr
+#
+# C7g (Compute Optimized, Graviton3) - Best for CPU-intensive workloads
+#   c7g.medium  - 2 vCPU, 4GB RAM  - $0.0363/hr
+#   c7g.large   - 2 vCPU, 8GB RAM  - $0.0725/hr
+#   c7g.xlarge  - 4 vCPU, 16GB RAM - $0.145/hr
+#
+# M7g (General Purpose, Graviton3) - Best for balanced workloads
+#   m7g.medium  - 2 vCPU, 4GB RAM  - $0.0408/hr
+#   m7g.large   - 2 vCPU, 8GB RAM  - $0.0816/hr
+#   m7g.xlarge  - 4 vCPU, 16GB RAM - $0.163/hr
+#
+# Workload Size Recommendations:
+#
+# Small (<1M records):
+#   discoverer: t4g.small, worker: t4g.small
+#
+# Medium (1-10M records):
+#   discoverer: t4g.small, worker: t4g.medium
+#
+# Large (10-100M records):
+#   discoverer: t4g.medium, worker: c7g.large
+#
+# Very Large (>100M records):
+#   discoverer: t4g.medium, worker: c7g.xlarge
+#
+# ============================================================================

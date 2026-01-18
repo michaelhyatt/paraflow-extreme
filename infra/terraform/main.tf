@@ -97,5 +97,10 @@ module "ec2" {
   # Logging
   log_group_name = module.job_logs.log_group_name
 
+  # Monitoring and Benchmark
+  enable_detailed_monitoring = var.enable_detailed_monitoring
+  bootstrap_timeout_seconds  = var.bootstrap_timeout_seconds
+  benchmark_mode             = var.benchmark_mode
+
   depends_on = [module.sqs, module.job_logs]
 }
