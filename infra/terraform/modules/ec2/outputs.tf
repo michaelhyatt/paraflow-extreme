@@ -13,19 +13,40 @@ output "discoverer_public_ip" {
   value       = aws_instance.discoverer.public_ip
 }
 
+output "worker_instance_ids" {
+  description = "Instance IDs of the worker EC2 instances"
+  value       = aws_instance.worker[*].id
+}
+
+output "worker_private_ips" {
+  description = "Private IPs of the worker EC2 instances"
+  value       = aws_instance.worker[*].private_ip
+}
+
+output "worker_public_ips" {
+  description = "Public IPs of the worker EC2 instances (if assigned)"
+  value       = aws_instance.worker[*].public_ip
+}
+
+# Backwards compatibility - return first worker's info
 output "worker_instance_id" {
-  description = "Instance ID of the worker EC2 instance"
-  value       = aws_instance.worker.id
+  description = "Instance ID of the first worker EC2 instance (for backwards compatibility)"
+  value       = aws_instance.worker[0].id
 }
 
 output "worker_private_ip" {
-  description = "Private IP of the worker EC2 instance"
-  value       = aws_instance.worker.private_ip
+  description = "Private IP of the first worker EC2 instance (for backwards compatibility)"
+  value       = aws_instance.worker[0].private_ip
 }
 
 output "worker_public_ip" {
-  description = "Public IP of the worker EC2 instance (if assigned)"
-  value       = aws_instance.worker.public_ip
+  description = "Public IP of the first worker EC2 instance (for backwards compatibility)"
+  value       = aws_instance.worker[0].public_ip
+}
+
+output "worker_count" {
+  description = "Number of worker instances deployed"
+  value       = var.worker_count
 }
 
 output "security_group_id" {

@@ -16,7 +16,7 @@ max_files     = 20000
 
 # Partitioning (for date-based discovery)
 partitioning = "parquet/by_year/YEAR=$${_time:%Y}/"
-filter       = "_time=2000-01-01..2026-01-05"
+filter       = "_time=1900-01-01..2026-01-05"
 
 # Docker Image
 image_tag = "latest"
@@ -26,7 +26,8 @@ discoverer_instance_type = "t4g.small"  # 2 vCPU, 2GB RAM
 worker_instance_type     = "t4g.medium" # 2 vCPU, 4GB RAM
 
 # Worker Configuration
-worker_threads = 0  # 0 = auto-detect from CPU cores
+worker_count   = 1   # Number of worker instances (for horizontal scaling)
+worker_threads = 0   # 0 = auto-detect from CPU cores
 batch_size     = 10000
 
 # SQS Configuration
@@ -63,17 +64,26 @@ benchmark_mode = false
 # Cost-Efficient (Small datasets, <1M records):
 #   discoverer_instance_type = "t4g.small"   # $0.0168/hr
 #   worker_instance_type     = "t4g.small"   # $0.0168/hr
+#   worker_count             = 1
 #
 # Balanced (Medium datasets, 1-10M records):
 #   discoverer_instance_type = "t4g.small"   # $0.0168/hr
 #   worker_instance_type     = "t4g.medium"  # $0.0336/hr
+#   worker_count             = 1
 #
 # Performance (Large datasets, >10M records):
 #   discoverer_instance_type = "t4g.medium"  # $0.0336/hr
-#   worker_instance_type     = "c7g.large"   # $0.0725/hr
+#   worker_instance_type     = "t4g.2xlarge" # $0.2688/hr
+#   worker_count             = 1
 #
 # High-Performance (Very large datasets, >100M records):
 #   discoverer_instance_type = "t4g.medium"  # $0.0336/hr
-#   worker_instance_type     = "c7g.xlarge"  # $0.145/hr
+#   worker_instance_type     = "c7g.4xlarge" # $0.58/hr (best single-instance throughput)
+#   worker_count             = 1
 #
-# See benchmark results in docs/benchmarks/ for detailed comparisons
+# Maximum Cost Efficiency (Best $/record):
+#   discoverer_instance_type = "t4g.small"   # $0.0168/hr
+#   worker_instance_type     = "t4g.2xlarge" # $0.2688/hr each
+#   worker_count             = 2             # 2x t4g.2xlarge is 53% cheaper than 1x c7g.4xlarge
+#
+# See research/arm64-benchmark-results-2026-01-18.md for detailed comparisons

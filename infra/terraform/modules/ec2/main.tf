@@ -244,10 +244,11 @@ resource "aws_instance" "discoverer" {
 }
 
 # ============================================================================
-# Worker Instance
+# Worker Instances (supports horizontal scaling)
 # ============================================================================
 
 resource "aws_instance" "worker" {
+  count                  = var.worker_count
   ami                    = data.aws_ami.ecs_optimized.id
   instance_type          = var.worker_instance_type
   subnet_id              = var.subnet_id
@@ -277,10 +278,11 @@ resource "aws_instance" "worker" {
 
   tags = merge(
     {
-      Name        = "paraflow-${var.job_id}-worker"
+      Name        = var.worker_count > 1 ? "paraflow-${var.job_id}-worker-${count.index + 1}" : "paraflow-${var.job_id}-worker"
       JobId       = var.job_id
       Environment = var.environment
       Component   = "worker"
+      WorkerIndex = tostring(count.index + 1)
     },
     var.tags
   )

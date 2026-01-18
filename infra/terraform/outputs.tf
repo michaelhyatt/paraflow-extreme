@@ -54,13 +54,29 @@ output "discoverer_private_ip" {
   value       = module.ec2.discoverer_private_ip
 }
 
+output "worker_instance_ids" {
+  description = "Instance IDs of the worker EC2 instances"
+  value       = module.ec2.worker_instance_ids
+}
+
+output "worker_private_ips" {
+  description = "Private IPs of the worker EC2 instances"
+  value       = module.ec2.worker_private_ips
+}
+
+output "worker_count" {
+  description = "Number of worker instances deployed"
+  value       = module.ec2.worker_count
+}
+
+# Backwards compatibility
 output "worker_instance_id" {
-  description = "Instance ID of the worker EC2 instance"
+  description = "Instance ID of the first worker EC2 instance (for backwards compatibility)"
   value       = module.ec2.worker_instance_id
 }
 
 output "worker_private_ip" {
-  description = "Private IP of the worker EC2 instance"
+  description = "Private IP of the first worker EC2 instance (for backwards compatibility)"
   value       = module.ec2.worker_private_ip
 }
 

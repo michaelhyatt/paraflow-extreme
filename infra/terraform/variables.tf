@@ -150,6 +150,12 @@ variable "sqs_max_receive_count" {
 # Worker Configuration
 # ============================================================================
 
+variable "worker_count" {
+  description = "Number of worker instances to deploy (for horizontal scaling)"
+  type        = number
+  default     = 1
+}
+
 variable "worker_threads" {
   description = "Number of processing threads for worker (0 = auto-detect from CPU cores)"
   type        = number

@@ -94,6 +94,7 @@ module "ec2" {
   sqs_queue_arn = module.sqs.queue_arn
 
   # Worker configuration
+  worker_count   = var.worker_count
   worker_threads = var.worker_threads
   batch_size     = var.batch_size
 

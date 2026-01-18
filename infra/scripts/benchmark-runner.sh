@@ -88,6 +88,7 @@ echo "  Identity: $AWS_ARN"
 
 # Default configuration
 INSTANCE_TYPE="${INSTANCE_TYPE:-t4g.medium}"
+WORKER_COUNT="${WORKER_COUNT:-1}"  # Number of worker instances (for horizontal scaling)
 WORKER_THREADS="${WORKER_THREADS:-0}"  # 0 = auto-detect from CPU cores
 BATCH_SIZE="${BATCH_SIZE:-10000}"
 # MAX_FILES: if not set, read from example.tfvars (default to 100 if not found)
@@ -354,6 +355,141 @@ EOF
         log_warn "Could not fetch logs from CloudWatch"
         echo "{}" > "$run_dir/worker_metrics.json"
     fi
+}
+
+# Fetch metrics from all workers and aggregate them
+fetch_all_worker_metrics() {
+    local run_dir="$1"
+    local worker_ids="$2"  # Space-separated list of worker instance IDs
+    local worker_count="${3:-1}"
+
+    log_info "Fetching metrics from $worker_count worker(s)..."
+
+    # Initialize aggregated metrics
+    local total_files=0
+    local total_records=0
+    local total_mb_per_sec=0
+    local total_rec_per_sec=0
+    local max_duration=0
+    local workers_with_metrics=0
+
+    # Create workers directory for individual metrics
+    mkdir -p "$run_dir/workers"
+
+    local worker_index=0
+    for instance_id in $worker_ids; do
+        worker_index=$((worker_index + 1))
+        if [ -z "$instance_id" ] || [ "$instance_id" = "None" ]; then
+            continue
+        fi
+
+        log_info "Fetching metrics from worker $worker_index (instance: $instance_id)..."
+
+        local log_group="/paraflow/jobs/$JOB_ID"
+        local log_stream="${instance_id}/worker/user-data"
+
+        # Fetch recent log events
+        local logs=$(aws logs get-log-events \
+            --region "$AWS_REGION" \
+            --log-group-name "$log_group" \
+            --log-stream-name "$log_stream" \
+            --limit 100 \
+            --query 'events[*].message' \
+            --output text 2>/dev/null || echo "")
+
+        if [ -n "$logs" ] && [ "$logs" != "None" ]; then
+            # Extract metrics from this worker
+            local files=$(echo "$logs" | sed -n 's/.*files=\([0-9]*\).*/\1/p' | tail -1)
+            local records=$(echo "$logs" | sed -n 's/.*records=\([0-9,]*\).*/\1/p' | tail -1 | tr -d ',')
+            local rec_per_sec=$(echo "$logs" | sed -n 's/.*throughput=\([0-9,]*\).*/\1/p' | tail -1 | tr -d ',')
+            local mb_per_sec=$(echo "$logs" | sed -n 's/.*rec\/s[[:space:]]*\([0-9.]*\)[[:space:]]*MB\/s.*/\1/p' | tail -1)
+            local duration=$(echo "$logs" | sed -n 's/.*Worker Complete (\([0-9]*\)s.*/\1/p' | tail -1)
+
+            # Set defaults
+            files="${files:-0}"
+            records="${records:-0}"
+            rec_per_sec="${rec_per_sec:-0}"
+            mb_per_sec="${mb_per_sec:-0}"
+            duration="${duration:-0}"
+
+            log_info "  Worker $worker_index: files=$files, records=$records, $rec_per_sec rec/s, $mb_per_sec MB/s, ${duration}s"
+
+            # Save individual worker metrics
+            cat > "$run_dir/workers/worker_${worker_index}_metrics.json" <<EOF
+{
+    "worker_index": $worker_index,
+    "instance_id": "$instance_id",
+    "files_processed": $files,
+    "records_processed": $records,
+    "records_per_second": $rec_per_sec,
+    "mb_per_second": $mb_per_sec,
+    "duration": $duration
+}
+EOF
+
+            # Aggregate metrics
+            if [ "$files" -gt 0 ] 2>/dev/null || [ "$records" -gt 0 ] 2>/dev/null; then
+                workers_with_metrics=$((workers_with_metrics + 1))
+                total_files=$((total_files + files))
+                total_records=$((total_records + records))
+                # Sum throughput (workers process in parallel)
+                total_rec_per_sec=$(echo "$total_rec_per_sec + $rec_per_sec" | bc 2>/dev/null || echo "$total_rec_per_sec")
+                total_mb_per_sec=$(echo "$total_mb_per_sec + $mb_per_sec" | bc 2>/dev/null || echo "$total_mb_per_sec")
+                # Track max duration (job completes when all workers finish)
+                if [ "$duration" -gt "$max_duration" ] 2>/dev/null; then
+                    max_duration="$duration"
+                fi
+            fi
+        else
+            log_warn "  Worker $worker_index: Could not fetch logs"
+        fi
+    done
+
+    # Calculate derived metrics
+    local files_per_sec=0
+    local bytes_read="0 bytes"
+    if [ "$max_duration" -gt 0 ] 2>/dev/null && [ "$total_files" -gt 0 ] 2>/dev/null; then
+        files_per_sec=$(echo "scale=2; $total_files / $max_duration" | bc 2>/dev/null || echo "0")
+    fi
+    if [ "$max_duration" -gt 0 ] && [ "$total_mb_per_sec" != "0" ]; then
+        local total_mb=$(echo "scale=2; $total_mb_per_sec * $max_duration" | bc 2>/dev/null || echo "0")
+        if [ "$total_mb" != "0" ]; then
+            if [ "$(echo "$total_mb >= 1024" | bc 2>/dev/null)" = "1" ]; then
+                local total_gb=$(echo "scale=2; $total_mb / 1024" | bc 2>/dev/null || echo "0")
+                bytes_read="${total_gb} GB"
+            else
+                bytes_read="${total_mb} MB"
+            fi
+        fi
+    fi
+
+    log_info "Aggregated metrics from $workers_with_metrics worker(s):"
+    log_info "  Total files: $total_files"
+    log_info "  Total records: $total_records"
+    log_info "  Combined throughput: $total_rec_per_sec rec/s, $total_mb_per_sec MB/s"
+    log_info "  Max duration: ${max_duration}s"
+
+    # Save aggregated metrics
+    cat > "$run_dir/worker_metrics.json" <<EOF
+{
+    "component": "worker",
+    "job_id": "$JOB_ID",
+    "worker_count": $worker_count,
+    "workers_reporting": $workers_with_metrics,
+    "throughput": {
+        "files_processed": $total_files,
+        "records_processed": $total_records,
+        "records_per_second": $total_rec_per_sec,
+        "mb_per_second": $total_mb_per_sec,
+        "files_per_second": $files_per_sec,
+        "bytes_read": "$bytes_read"
+    },
+    "duration": $max_duration,
+    "source": "cloudwatch_logs_aggregated"
+}
+EOF
+
+    log_success "Aggregated worker metrics saved to $run_dir/worker_metrics.json"
 }
 
 parse_worker_metrics() {
@@ -695,10 +831,23 @@ generate_report() {
     log_info "Generating benchmark report..."
 
     local report_file="$run_dir/report.md"
+    local worker_count="${DEPLOYED_WORKER_COUNT:-1}"
 
     # Parse worker metrics if not already done
     if [ -z "$WORKER_FILES_PROCESSED" ]; then
         parse_worker_metrics "$run_dir"
+    fi
+
+    # Extract workers_reporting from metrics file if available
+    local workers_reporting="$worker_count"
+    if command -v jq &> /dev/null && [ -f "$run_dir/worker_metrics.json" ]; then
+        workers_reporting=$(jq -r '.workers_reporting // .worker_count // 1' "$run_dir/worker_metrics.json" 2>/dev/null || echo "$worker_count")
+    fi
+
+    # Build configuration description
+    local config_desc="$instance_type"
+    if [ "$worker_count" -gt 1 ] 2>/dev/null; then
+        config_desc="${worker_count}× $instance_type"
     fi
 
     cat > "$report_file" <<EOF
@@ -709,13 +858,15 @@ generate_report() {
 | Parameter | Value |
 |-----------|-------|
 | Instance Type | $instance_type |
+| Worker Count | $worker_count |
+| Configuration | $config_desc |
 | Worker Threads | $([ "$WORKER_THREADS" = "0" ] && echo "auto (nproc)" || echo "$WORKER_THREADS") |
 | Batch Size | $BATCH_SIZE |
 | Max Files | $MAX_FILES |
 | Job ID | $job_id |
 | Timestamp | $TIMESTAMP |
 
-## Throughput Results
+## Throughput Results (Combined from $workers_reporting worker(s))
 
 | Metric | Value |
 |--------|-------|
@@ -746,17 +897,22 @@ EOF
         t4g.medium)  hourly_cost=0.0336 ;;
         t4g.large)   hourly_cost=0.0672 ;;
         t4g.xlarge)  hourly_cost=0.1344 ;;
+        t4g.2xlarge) hourly_cost=0.2688 ;;
         c7g.medium)  hourly_cost=0.0363 ;;
         c7g.large)   hourly_cost=0.0725 ;;
         c7g.xlarge)  hourly_cost=0.145 ;;
+        c7g.2xlarge) hourly_cost=0.29 ;;
+        c7g.4xlarge) hourly_cost=0.58 ;;
         m7g.medium)  hourly_cost=0.0408 ;;
         m7g.large)   hourly_cost=0.0816 ;;
         m7g.xlarge)  hourly_cost=0.163 ;;
         *)           hourly_cost=0.05 ;;
     esac
 
+    # Multiply hourly cost by worker count
+    local combined_hourly_cost=$(echo "scale=4; $hourly_cost * $worker_count" | bc)
     local hours=$(echo "scale=4; $total_time / 3600" | bc)
-    local cost=$(echo "scale=6; $hours * $hourly_cost" | bc)
+    local cost=$(echo "scale=6; $hours * $combined_hourly_cost" | bc)
 
     # Calculate cost per million records
     local cost_per_million="N/A"
@@ -765,18 +921,54 @@ EOF
     fi
 
     cat >> "$report_file" <<EOF
-| Instance Type | Hourly Cost | Run Time (hours) | Job Cost | Cost per 1M Records |
+| Configuration | Hourly Cost | Run Time (hours) | Job Cost | Cost per 1M Records |
 |---------------|-------------|------------------|----------|---------------------|
-| $instance_type | \$$hourly_cost | $hours | \$$cost | \$$cost_per_million |
+| $config_desc | \$$combined_hourly_cost | $hours | \$$cost | \$$cost_per_million |
 
+EOF
+
+    # Add individual worker breakdown if multiple workers
+    if [ "$worker_count" -gt 1 ] 2>/dev/null && [ -d "$run_dir/workers" ]; then
+        cat >> "$report_file" <<EOF
+## Individual Worker Metrics
+
+| Worker | Instance ID | Files | Records | Records/sec | MB/s | Duration |
+|--------|-------------|-------|---------|-------------|------|----------|
+EOF
+        for worker_file in "$run_dir/workers"/worker_*_metrics.json; do
+            if [ -f "$worker_file" ]; then
+                if command -v jq &> /dev/null; then
+                    local w_index=$(jq -r '.worker_index' "$worker_file" 2>/dev/null)
+                    local w_instance=$(jq -r '.instance_id' "$worker_file" 2>/dev/null)
+                    local w_files=$(jq -r '.files_processed' "$worker_file" 2>/dev/null)
+                    local w_records=$(jq -r '.records_processed' "$worker_file" 2>/dev/null)
+                    local w_rec_sec=$(jq -r '.records_per_second' "$worker_file" 2>/dev/null)
+                    local w_mb_sec=$(jq -r '.mb_per_second' "$worker_file" 2>/dev/null)
+                    local w_duration=$(jq -r '.duration' "$worker_file" 2>/dev/null)
+                    echo "| $w_index | $w_instance | $w_files | $w_records | $w_rec_sec | $w_mb_sec | ${w_duration}s |" >> "$report_file"
+                fi
+            fi
+        done
+        echo "" >> "$report_file"
+    fi
+
+    cat >> "$report_file" <<EOF
 ## Files
 
-- \`worker_metrics.json\` - Worker throughput metrics from EC2 instance
+- \`worker_metrics.json\` - Aggregated worker throughput metrics
 - \`queue_metrics.jsonl\` - SQS queue metrics over time
 - \`cpu_metrics.json\` - CloudWatch CPU metrics
 - \`memory_metrics.json\` - CloudWatch memory metrics
 - \`network_metrics.json\` - CloudWatch network metrics
 - \`logs.json\` - CloudWatch log events
+EOF
+
+    # Add workers directory note if multiple workers
+    if [ "$worker_count" -gt 1 ] 2>/dev/null; then
+        echo "- \`workers/\` - Individual worker metrics" >> "$report_file"
+    fi
+
+    cat >> "$report_file" <<EOF
 
 ---
 Generated by Paraflow Benchmark Runner
@@ -808,6 +1000,7 @@ deploy() {
     cat > "$benchmark_tfvars" <<EOF
 # Benchmark run: $TIMESTAMP
 worker_instance_type       = "$INSTANCE_TYPE"
+worker_count               = $WORKER_COUNT
 worker_threads             = $WORKER_THREADS
 batch_size                 = $BATCH_SIZE
 max_files                  = $MAX_FILES
@@ -818,6 +1011,7 @@ EOF
 
     log_info "Benchmark configuration:"
     log_info "  - worker_instance_type: $INSTANCE_TYPE"
+    log_info "  - worker_count: $WORKER_COUNT"
     log_info "  - worker_threads: $WORKER_THREADS"
     log_info "  - batch_size: $BATCH_SIZE"
     log_info "  - max_files: $MAX_FILES"
@@ -869,6 +1063,9 @@ EOF
     SQS_QUEUE_URL=$(terraform output -raw sqs_queue_url 2>/dev/null || echo "N/A")
     DISCOVERER_INSTANCE_ID=$(terraform output -raw discoverer_instance_id 2>/dev/null || echo "N/A")
     WORKER_INSTANCE_ID=$(terraform output -raw worker_instance_id 2>/dev/null || echo "N/A")
+    # Get all worker instance IDs as a space-separated list
+    WORKER_INSTANCE_IDS=$(terraform output -json worker_instance_ids 2>/dev/null | jq -r '.[]' 2>/dev/null | tr '\n' ' ' || echo "$WORKER_INSTANCE_ID")
+    DEPLOYED_WORKER_COUNT=$(terraform output -raw worker_count 2>/dev/null || echo "1")
     local ecr_repository=$(terraform output -raw ecr_repository_url 2>/dev/null || echo "N/A")
 
     # CRITICAL: Get region from terraform - it may differ from AWS_REGION env var
@@ -887,7 +1084,8 @@ EOF
     log_info "  SQS Queue: $SQS_QUEUE_URL"
     log_info "  ECR Repository: $ecr_repository"
     log_info "  Discoverer Instance: $DISCOVERER_INSTANCE_ID"
-    log_info "  Worker Instance: $WORKER_INSTANCE_ID"
+    log_info "  Worker Count: $DEPLOYED_WORKER_COUNT"
+    log_info "  Worker Instance(s): $WORKER_INSTANCE_IDS"
 
     # Verify instances exist before proceeding
     log_info "Verifying instances are running..."
@@ -963,16 +1161,30 @@ monitor() {
     echo "============================================================================"
     echo ""
 
-    # Fetch worker throughput metrics before instance terminates
-    log_info "Fetching worker instance ID..."
-    local worker_id="$WORKER_INSTANCE_ID"
-    if [ "$worker_id" = "N/A" ] || [ -z "$worker_id" ]; then
-        worker_id=$(get_instance_id "worker")
-    fi
-    log_info "Worker instance ID: $worker_id"
+    # Fetch worker throughput metrics before instances terminate
+    local worker_count="${DEPLOYED_WORKER_COUNT:-1}"
+    local worker_ids="$WORKER_INSTANCE_IDS"
 
-    log_info "Fetching benchmark metrics from worker instance..."
-    fetch_benchmark_metrics "$worker_id" "$run_dir"
+    # Fall back to single worker ID if WORKER_INSTANCE_IDS not set
+    if [ -z "$worker_ids" ] || [ "$worker_ids" = " " ]; then
+        worker_ids="$WORKER_INSTANCE_ID"
+        if [ "$worker_ids" = "N/A" ] || [ -z "$worker_ids" ]; then
+            worker_ids=$(get_instance_id "worker")
+        fi
+    fi
+
+    log_info "Worker count: $worker_count"
+    log_info "Worker instance IDs: $worker_ids"
+
+    # Use multi-worker fetch if more than one worker
+    if [ "$worker_count" -gt 1 ] 2>/dev/null; then
+        log_info "Fetching and aggregating metrics from $worker_count workers..."
+        fetch_all_worker_metrics "$run_dir" "$worker_ids" "$worker_count"
+    else
+        log_info "Fetching benchmark metrics from single worker instance..."
+        local worker_id=$(echo "$worker_ids" | awk '{print $1}')
+        fetch_benchmark_metrics "$worker_id" "$run_dir"
+    fi
 
     log_info "Parsing worker metrics..."
     parse_worker_metrics "$run_dir"
@@ -1029,6 +1241,7 @@ run_benchmark() {
     echo ""
     log_info "BENCHMARK CONFIGURATION:"
     log_info "  Instance Type:   $INSTANCE_TYPE"
+    log_info "  Worker Count:    $WORKER_COUNT"
     log_info "  Worker Threads:  $([ "$WORKER_THREADS" = "0" ] && echo "auto (nproc)" || echo "$WORKER_THREADS")"
     log_info "  Batch Size:      $BATCH_SIZE"
     log_info "  Max Files:       $MAX_FILES"
@@ -1050,6 +1263,7 @@ run_benchmark() {
     cat > "$run_dir/config.json" <<EOF
 {
     "instance_type": "$INSTANCE_TYPE",
+    "worker_count": $WORKER_COUNT,
     "worker_threads": $WORKER_THREADS,
     "batch_size": $BATCH_SIZE,
     "max_files": $MAX_FILES,
@@ -1075,8 +1289,14 @@ EOF
 
     # Output summary CSV line for orchestrator (to stdout)
     echo ""
+    local config_desc="$INSTANCE_TYPE"
+    if [ "$WORKER_COUNT" -gt 1 ] 2>/dev/null; then
+        config_desc="${WORKER_COUNT}× $INSTANCE_TYPE"
+    fi
     log_info "BENCHMARK SUMMARY:"
+    log_info "  Configuration:      $config_desc"
     log_info "  Instance Type:      $INSTANCE_TYPE"
+    log_info "  Worker Count:       $WORKER_COUNT"
     log_info "  Total Duration:     ${total_time}s"
     log_info "  Files Processed:    ${WORKER_FILES_PROCESSED:-0}"
     log_info "  Records Processed:  ${WORKER_RECORDS_PROCESSED:-0}"
@@ -1084,9 +1304,9 @@ EOF
     log_info "  Records/sec:        ${WORKER_RECORDS_PER_SEC:-0}"
     log_info "  Throughput:         ${WORKER_MB_PER_SEC:-0} MB/s"
 
-    # Format: instance_type,duration,files_processed,records_processed,files_per_sec,records_per_sec,mb_per_sec
+    # Format: instance_type,worker_count,duration,files_processed,records_processed,files_per_sec,records_per_sec,mb_per_sec
     echo ""
-    echo "BENCHMARK_RESULT:$INSTANCE_TYPE,$total_time,${WORKER_FILES_PROCESSED:-0},${WORKER_RECORDS_PROCESSED:-0},${WORKER_FILES_PER_SEC:-0},${WORKER_RECORDS_PER_SEC:-0},${WORKER_MB_PER_SEC:-0}"
+    echo "BENCHMARK_RESULT:$INSTANCE_TYPE,$WORKER_COUNT,$total_time,${WORKER_FILES_PROCESSED:-0},${WORKER_RECORDS_PROCESSED:-0},${WORKER_FILES_PER_SEC:-0},${WORKER_RECORDS_PER_SEC:-0},${WORKER_MB_PER_SEC:-0}"
 
     # Teardown (optional - can skip with --no-teardown)
     if [ "$SKIP_TEARDOWN" != "true" ]; then
@@ -1128,6 +1348,7 @@ Commands:
 
 Options:
     --instance-type TYPE    Worker instance type (default: t4g.medium)
+    --worker-count NUM      Number of worker instances (default: 1)
     --threads NUM           Worker threads (default: 4)
     --batch-size NUM        Batch size (default: 10000)
     --max-files NUM         Max files to process (default: 100)
@@ -1146,6 +1367,7 @@ Examples:
 
 Environment Variables:
     INSTANCE_TYPE       Worker instance type
+    WORKER_COUNT        Number of worker instances (for horizontal scaling)
     WORKER_THREADS      Number of worker threads
     BATCH_SIZE          Batch size for processing
     MAX_FILES           Maximum files to process
@@ -1159,6 +1381,10 @@ parse_args() {
         case "$1" in
             --instance-type)
                 INSTANCE_TYPE="$2"
+                shift 2
+                ;;
+            --worker-count)
+                WORKER_COUNT="$2"
                 shift 2
                 ;;
             --threads)
