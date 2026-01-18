@@ -1,5 +1,6 @@
 //! Configuration types for the worker.
 
+use crate::prefetch::PrefetchConfig;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -42,6 +43,13 @@ pub struct WorkerConfig {
     ///
     /// If set, flush is triggered when either byte or record threshold is exceeded.
     pub accumulator_threshold_records: Option<usize>,
+
+    /// Prefetch configuration for async I/O.
+    ///
+    /// When enabled, the worker will prefetch files from S3 while processing
+    /// other files, overlapping I/O latency with processing.
+    #[serde(default)]
+    pub prefetch: PrefetchConfig,
 }
 
 impl Default for WorkerConfig {
@@ -56,6 +64,7 @@ impl Default for WorkerConfig {
             s3_endpoint: None,
             accumulator_threshold_bytes: DEFAULT_ACCUMULATOR_THRESHOLD_BYTES,
             accumulator_threshold_records: None,
+            prefetch: PrefetchConfig::default(),
         }
     }
 }
@@ -125,6 +134,23 @@ impl WorkerConfig {
         self
     }
 
+    /// Set the prefetch configuration.
+    ///
+    /// Prefetching overlaps S3 downloads with processing, improving throughput.
+    pub fn with_prefetch(mut self, prefetch: PrefetchConfig) -> Self {
+        self.prefetch = prefetch;
+        self
+    }
+
+    /// Disable prefetching.
+    ///
+    /// This is a convenience method equivalent to
+    /// `.with_prefetch(PrefetchConfig::disabled())`.
+    pub fn with_prefetch_disabled(mut self) -> Self {
+        self.prefetch = PrefetchConfig::disabled();
+        self
+    }
+
     /// Validate the configuration.
     pub fn validate(&self) -> Result<(), String> {
         if self.thread_count == 0 {
@@ -139,6 +165,7 @@ impl WorkerConfig {
         if self.accumulator_threshold_bytes == 0 {
             return Err("accumulator_threshold_bytes must be at least 1".to_string());
         }
+        self.prefetch.validate()?;
         Ok(())
     }
 }
@@ -189,6 +216,8 @@ mod tests {
             DEFAULT_ACCUMULATOR_THRESHOLD_BYTES
         );
         assert!(config.accumulator_threshold_records.is_none());
+        // Prefetch is enabled by default
+        assert!(config.prefetch.enabled);
     }
 
     #[test]
@@ -232,5 +261,31 @@ mod tests {
 
         let invalid = WorkerConfig::new().with_accumulator_threshold_bytes(0);
         assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn test_worker_config_prefetch() {
+        // Test with_prefetch_disabled
+        let config = WorkerConfig::new().with_prefetch_disabled();
+        assert!(!config.prefetch.enabled);
+        assert!(config.validate().is_ok());
+
+        // Test with_prefetch
+        let custom_prefetch = PrefetchConfig::new()
+            .with_max_prefetch_count(4)
+            .with_max_memory_bytes(50 * 1024 * 1024);
+        let config = WorkerConfig::new().with_prefetch(custom_prefetch);
+        assert!(config.prefetch.enabled);
+        assert_eq!(config.prefetch.max_prefetch_count, 4);
+        assert_eq!(config.prefetch.max_memory_bytes, 50 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_worker_config_prefetch_validation() {
+        // Invalid prefetch config should cause validation to fail
+        let mut config = WorkerConfig::new();
+        config.prefetch.enabled = true;
+        config.prefetch.max_prefetch_count = 0;
+        assert!(config.validate().is_err());
     }
 }

@@ -164,6 +164,14 @@ impl Pipeline {
         &self.stats
     }
 
+    /// Get a reference to the reader.
+    ///
+    /// This is useful for prefetching, where the prefetcher needs access
+    /// to the reader to open streams ahead of time.
+    pub fn reader(&self) -> &Arc<dyn StreamingReader> {
+        &self.reader
+    }
+
     /// Process a single work item.
     pub async fn process(&self, message: &QueueMessage) -> ProcessingResult {
         let start = Instant::now();
@@ -222,6 +230,71 @@ impl Pipeline {
                     thread = self.thread_id,
                     file = %work_item.file_uri,
                     error = %error,
+                    "File processing failed"
+                );
+            }
+        }
+
+        result
+    }
+
+    /// Process a work item with a pre-opened stream.
+    ///
+    /// This method is used when the stream has already been opened by the
+    /// prefetcher, allowing the worker to skip the S3 download latency.
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - The queue message containing the work item
+    /// * `stream` - The pre-opened batch stream from the prefetcher
+    pub async fn process_with_stream(
+        &self,
+        message: &QueueMessage,
+        stream: BatchStream,
+    ) -> ProcessingResult {
+        let start = Instant::now();
+        let work_item = &message.work_item;
+
+        debug!(
+            thread = self.thread_id,
+            file = %work_item.file_uri,
+            prefetched = true,
+            "Processing file with prefetched stream"
+        );
+
+        // Process the batch stream (same as regular process, but stream already opened)
+        let result = self.process_stream(stream, work_item).await;
+        let duration = start.elapsed();
+
+        if result.success {
+            self.stats.record_file_success(
+                result.records_processed,
+                result.bytes_read,
+                result.bytes_written,
+                duration,
+            );
+            self.global_stats.record_file_success(
+                result.records_processed,
+                result.bytes_read,
+                result.bytes_written,
+            );
+            info!(
+                thread = self.thread_id,
+                file = %work_item.file_uri,
+                records = result.records_processed,
+                duration_ms = duration.as_millis(),
+                prefetched = true,
+                "File processed successfully"
+            );
+        } else {
+            self.stats.record_file_failure();
+            self.global_stats.record_file_failure();
+            if let Some(ref error) = result.error {
+                warn!(
+                    thread = self.thread_id,
+                    file = %work_item.file_uri,
+                    error = %error,
+                    prefetched = true,
                     "File processing failed"
                 );
             }
