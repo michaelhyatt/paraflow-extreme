@@ -274,7 +274,8 @@ fetch_benchmark_metrics() {
         # Try to find the benchmark metrics from the logs
         # Worker outputs: "Metrics: files=X records=Y throughput=Z rec/s W MB/s"
         # Use sed instead of grep -P for macOS compatibility
-        local files=$(echo "$logs" | sed -n 's/.*files=\([0-9]*\).*/\1/p' | tail -1)
+        # Note: files should be plain numbers (no commas) after fix to user_data_worker.sh.tpl
+        local files=$(echo "$logs" | sed -n 's/.*files=\([0-9,]*\).*/\1/p' | tail -1 | tr -d ',')
         local records=$(echo "$logs" | sed -n 's/.*records=\([0-9,]*\).*/\1/p' | tail -1 | tr -d ',')
         local rec_per_sec=$(echo "$logs" | sed -n 's/.*throughput=\([0-9,]*\).*/\1/p' | tail -1 | tr -d ',')
         # MB/s pattern: "rec/s X MB/s" - extract number before " MB/s"
@@ -357,13 +358,185 @@ EOF
     fi
 }
 
-# Fetch metrics from all workers and aggregate them
+# Fetch metrics from all workers by downloading profiling artifacts from S3
+# This is more reliable than parsing CloudWatch logs which may have race conditions
 fetch_all_worker_metrics() {
     local run_dir="$1"
     local worker_ids="$2"  # Space-separated list of worker instance IDs
     local worker_count="${3:-1}"
 
-    log_info "Fetching metrics from $worker_count worker(s)..."
+    log_info "Fetching metrics from $worker_count worker(s) via S3 profiling artifacts..."
+
+    # Get artifacts bucket from example.tfvars
+    local artifacts_bucket=$(grep -E '^artifacts_bucket\s*=' "$TERRAFORM_DIR/example.tfvars" 2>/dev/null | awk -F'"' '{print $2}' | head -1 || echo "")
+
+    if [ -z "$artifacts_bucket" ]; then
+        log_warn "No artifacts_bucket configured - falling back to CloudWatch logs"
+        fetch_all_worker_metrics_from_logs "$run_dir" "$worker_ids" "$worker_count"
+        return
+    fi
+
+    log_info "Artifacts bucket: $artifacts_bucket"
+
+    # Initialize aggregated metrics
+    local total_files=0
+    local total_records=0
+    local total_mb_per_sec=0
+    local total_rec_per_sec=0
+    local max_duration=0
+    local workers_with_metrics=0
+
+    # Create workers directory for individual metrics
+    mkdir -p "$run_dir/workers"
+
+    # Wait for profiling artifacts to appear in S3 (workers upload after completing)
+    log_info "Waiting for profiling artifacts in S3..."
+    local s3_prefix="s3://${artifacts_bucket}/profiling/${JOB_ID}/"
+    local max_wait=120  # 2 minutes max wait
+    local waited=0
+    local found_count=0
+
+    while [ $waited -lt $max_wait ]; do
+        # List profiling artifacts from the last hour
+        local artifacts=$(aws s3 ls "$s3_prefix" --region "$AWS_REGION" 2>/dev/null | grep "profiling-${JOB_ID}" | tail -20)
+        # Count matching lines - use wc -l instead of grep -c to avoid multiline issues
+        if [ -n "$artifacts" ]; then
+            found_count=$(echo "$artifacts" | wc -l | tr -d ' ')
+        else
+            found_count=0
+        fi
+
+        if [ "$found_count" -ge "$worker_count" ]; then
+            log_info "Found $found_count profiling artifacts"
+            break
+        fi
+
+        log_info "Found $found_count/$worker_count artifacts, waiting... (${waited}s)"
+        sleep 10
+        waited=$((waited + 10))
+    done
+
+    if [ "$found_count" -eq 0 ]; then
+        log_warn "No profiling artifacts found in S3 - falling back to CloudWatch logs"
+        fetch_all_worker_metrics_from_logs "$run_dir" "$worker_ids" "$worker_count"
+        return
+    fi
+
+    # Download and extract the most recent artifacts
+    local tmp_dir=$(mktemp -d)
+    local artifact_files=$(aws s3 ls "$s3_prefix" --region "$AWS_REGION" 2>/dev/null | grep "profiling-${JOB_ID}" | sort | tail -"$worker_count" | awk '{print $4}')
+
+    local worker_index=0
+    for artifact in $artifact_files; do
+        worker_index=$((worker_index + 1))
+        log_info "Downloading artifact $worker_index: $artifact"
+
+        # Download and extract
+        aws s3 cp "${s3_prefix}${artifact}" "$tmp_dir/" --region "$AWS_REGION" 2>/dev/null
+        mkdir -p "$tmp_dir/worker$worker_index"
+        tar -xzf "$tmp_dir/$artifact" -C "$tmp_dir/worker$worker_index" 2>/dev/null
+
+        # Extract metrics from benchmark-metrics.json
+        local metrics_file="$tmp_dir/worker$worker_index/benchmark-metrics.json"
+        if [ -f "$metrics_file" ]; then
+            local files=$(jq -r '.throughput.files // 0' "$metrics_file" 2>/dev/null || echo "0")
+            local records=$(jq -r '.throughput.records // 0' "$metrics_file" 2>/dev/null || echo "0")
+            local rec_per_sec=$(jq -r '.throughput.rec_per_sec // 0' "$metrics_file" 2>/dev/null || echo "0")
+            local mb_per_sec=$(jq -r '.throughput.mb_per_sec // 0' "$metrics_file" 2>/dev/null || echo "0")
+            local duration=$(jq -r '.duration // 0' "$metrics_file" 2>/dev/null || echo "0")
+            local status=$(jq -r '.status // "UNKNOWN"' "$metrics_file" 2>/dev/null || echo "UNKNOWN")
+
+            log_info "  Worker $worker_index: files=$files, records=$records, $rec_per_sec rec/s, $mb_per_sec MB/s, ${duration}s ($status)"
+
+            # Save individual worker metrics
+            cat > "$run_dir/workers/worker_${worker_index}_metrics.json" <<EOF
+{
+    "worker_index": $worker_index,
+    "artifact": "$artifact",
+    "files_processed": $files,
+    "records_processed": $records,
+    "records_per_second": $rec_per_sec,
+    "mb_per_second": $mb_per_sec,
+    "duration": $duration,
+    "status": "$status"
+}
+EOF
+
+            # Aggregate metrics
+            if [ "$files" -gt 0 ] 2>/dev/null || [ "$records" -gt 0 ] 2>/dev/null; then
+                workers_with_metrics=$((workers_with_metrics + 1))
+                total_files=$((total_files + files))
+                total_records=$((total_records + records))
+                # Sum throughput (workers process in parallel)
+                total_rec_per_sec=$(echo "$total_rec_per_sec + $rec_per_sec" | bc 2>/dev/null || echo "$total_rec_per_sec")
+                total_mb_per_sec=$(echo "$total_mb_per_sec + $mb_per_sec" | bc 2>/dev/null || echo "$total_mb_per_sec")
+                # Track max duration (job completes when all workers finish)
+                if [ "$duration" -gt "$max_duration" ] 2>/dev/null; then
+                    max_duration="$duration"
+                fi
+            fi
+        else
+            log_warn "  Worker $worker_index: No benchmark-metrics.json found in artifact"
+        fi
+    done
+
+    # Cleanup temp directory
+    rm -rf "$tmp_dir"
+
+    # Calculate derived metrics
+    local files_per_sec=0
+    local bytes_read="0 bytes"
+    if [ "$max_duration" -gt 0 ] 2>/dev/null && [ "$total_files" -gt 0 ] 2>/dev/null; then
+        files_per_sec=$(echo "scale=2; $total_files / $max_duration" | bc 2>/dev/null || echo "0")
+    fi
+    if [ "$max_duration" -gt 0 ] && [ "$total_mb_per_sec" != "0" ]; then
+        local total_mb=$(echo "scale=2; $total_mb_per_sec * $max_duration" | bc 2>/dev/null || echo "0")
+        if [ "$total_mb" != "0" ]; then
+            if [ "$(echo "$total_mb >= 1024" | bc 2>/dev/null)" = "1" ]; then
+                local total_gb=$(echo "scale=2; $total_mb / 1024" | bc 2>/dev/null || echo "0")
+                bytes_read="${total_gb} GB"
+            else
+                bytes_read="${total_mb} MB"
+            fi
+        fi
+    fi
+
+    log_info "Aggregated metrics from $workers_with_metrics worker(s):"
+    log_info "  Total files: $total_files"
+    log_info "  Total records: $total_records"
+    log_info "  Combined throughput: $total_rec_per_sec rec/s, $total_mb_per_sec MB/s"
+    log_info "  Max duration: ${max_duration}s"
+
+    # Save aggregated metrics
+    cat > "$run_dir/worker_metrics.json" <<EOF
+{
+    "component": "worker",
+    "job_id": "$JOB_ID",
+    "worker_count": $worker_count,
+    "workers_reporting": $workers_with_metrics,
+    "throughput": {
+        "files_processed": $total_files,
+        "records_processed": $total_records,
+        "records_per_second": $total_rec_per_sec,
+        "mb_per_second": $total_mb_per_sec,
+        "files_per_second": $files_per_sec,
+        "bytes_read": "$bytes_read"
+    },
+    "duration": $max_duration,
+    "source": "s3_profiling_artifacts"
+}
+EOF
+
+    log_success "Aggregated worker metrics saved to $run_dir/worker_metrics.json"
+}
+
+# Fallback: Fetch metrics from CloudWatch logs (less reliable due to race conditions)
+fetch_all_worker_metrics_from_logs() {
+    local run_dir="$1"
+    local worker_ids="$2"  # Space-separated list of worker instance IDs
+    local worker_count="${3:-1}"
+
+    log_info "Fetching metrics from CloudWatch logs (fallback)..."
 
     # Initialize aggregated metrics
     local total_files=0
@@ -398,11 +571,21 @@ fetch_all_worker_metrics() {
             --output text 2>/dev/null || echo "")
 
         if [ -n "$logs" ] && [ "$logs" != "None" ]; then
-            # Extract metrics from this worker
-            local files=$(echo "$logs" | sed -n 's/.*files=\([0-9]*\).*/\1/p' | tail -1)
-            local records=$(echo "$logs" | sed -n 's/.*records=\([0-9,]*\).*/\1/p' | tail -1 | tr -d ',')
-            local rec_per_sec=$(echo "$logs" | sed -n 's/.*throughput=\([0-9,]*\).*/\1/p' | tail -1 | tr -d ',')
-            local mb_per_sec=$(echo "$logs" | sed -n 's/.*rec\/s[[:space:]]*\([0-9.]*\)[[:space:]]*MB\/s.*/\1/p' | tail -1)
+            # Extract metrics from the "Metrics:" line specifically (not individual file logs)
+            local metrics_line=$(echo "$logs" | grep "^Metrics: files=" | tail -1)
+
+            if [ -n "$metrics_line" ]; then
+                local files=$(echo "$metrics_line" | sed -n 's/.*files=\([0-9]*\).*/\1/p')
+                local records=$(echo "$metrics_line" | sed -n 's/.*records=\([0-9,]*\).*/\1/p' | tr -d ',')
+                local rec_per_sec=$(echo "$metrics_line" | sed -n 's/.*throughput=\([0-9,]*\).*/\1/p' | tr -d ',')
+                local mb_per_sec=$(echo "$metrics_line" | sed -n 's/.*rec\/s[[:space:]]*\([0-9.]*\)[[:space:]]*MB\/s.*/\1/p')
+            else
+                local files=0
+                local records=0
+                local rec_per_sec=0
+                local mb_per_sec=0
+            fi
+
             local duration=$(echo "$logs" | sed -n 's/.*Worker Complete (\([0-9]*\)s.*/\1/p' | tail -1)
 
             # Set defaults
@@ -984,39 +1167,17 @@ EOF
 deploy() {
     echo ""
     echo "============================================================================"
-    echo " STEP 1: INFRASTRUCTURE DEPLOYMENT"
+    echo " STEP 1: INFRASTRUCTURE DEPLOYMENT (Two-Phase)"
     echo "============================================================================"
     echo ""
 
-    log_info "Deploying infrastructure with instance type: $INSTANCE_TYPE"
+    log_info "Two-phase deployment: discoverer first, then workers after queue is populated"
     log_info "Working directory: $TERRAFORM_DIR"
 
     cd "$TERRAFORM_DIR"
 
     # Create tfvars for this benchmark run
     local benchmark_tfvars="benchmark-${TIMESTAMP}.tfvars"
-
-    log_info "Creating benchmark tfvars file: $benchmark_tfvars"
-    cat > "$benchmark_tfvars" <<EOF
-# Benchmark run: $TIMESTAMP
-worker_instance_type       = "$INSTANCE_TYPE"
-worker_count               = $WORKER_COUNT
-worker_threads             = $WORKER_THREADS
-batch_size                 = $BATCH_SIZE
-max_files                  = $MAX_FILES
-enable_detailed_monitoring = true
-benchmark_mode             = true
-bootstrap_timeout_seconds  = 900
-EOF
-
-    log_info "Benchmark configuration:"
-    log_info "  - worker_instance_type: $INSTANCE_TYPE"
-    log_info "  - worker_count: $WORKER_COUNT"
-    log_info "  - worker_threads: $WORKER_THREADS"
-    log_info "  - batch_size: $BATCH_SIZE"
-    log_info "  - max_files: $MAX_FILES"
-    log_info "  - enable_detailed_monitoring: true"
-    log_info "  - benchmark_mode: true"
 
     # Check for base tfvars
     if [ -f "example.tfvars" ]; then
@@ -1034,41 +1195,43 @@ EOF
         log_info "Terraform already initialized"
     fi
 
-    # Plan and apply
+    # =========================================================================
+    # PHASE 1: Deploy discoverer only (worker_count=0)
+    # =========================================================================
     echo ""
-    log_info "Running terraform plan..."
-    log_info "Command: terraform plan -var-file=example.tfvars -var-file=$benchmark_tfvars -out=benchmark.tfplan"
-    echo ""
-    echo "--- Terraform Plan Output ---"
-    terraform plan -var-file="example.tfvars" -var-file="$benchmark_tfvars" -out="benchmark.tfplan"
-    echo "--- End Terraform Plan ---"
-    echo ""
-    log_success "Terraform plan complete"
+    log_info "PHASE 1: Deploying discoverer only (worker_count=0)..."
+
+    cat > "$benchmark_tfvars" <<EOF
+# Benchmark run: $TIMESTAMP - Phase 1 (discoverer only)
+worker_instance_type       = "$INSTANCE_TYPE"
+worker_count               = 0
+worker_threads             = $WORKER_THREADS
+batch_size                 = $BATCH_SIZE
+max_files                  = $MAX_FILES
+enable_detailed_monitoring = true
+benchmark_mode             = true
+bootstrap_timeout_seconds  = 900
+EOF
+
+    log_info "Phase 1 configuration:"
+    log_info "  - worker_instance_type: $INSTANCE_TYPE"
+    log_info "  - worker_count: 0 (discoverer only)"
+    log_info "  - max_files: $MAX_FILES"
 
     echo ""
-    log_info "Applying Terraform deployment..."
-    log_info "Command: terraform apply benchmark.tfplan"
-    log_info "Resources being created (watch for each resource completion):"
-    echo ""
-    echo "--- Terraform Apply Output ---"
-    terraform apply benchmark.tfplan
+    echo "--- Terraform Apply (Phase 1: Discoverer) ---"
+    terraform apply -var-file="example.tfvars" -var-file="$benchmark_tfvars" -auto-approve
     echo "--- End Terraform Apply ---"
     echo ""
-    log_success "Terraform apply complete"
+    log_success "Phase 1 complete: Discoverer deployed"
 
-    # Extract outputs
-    echo ""
-    log_info "Extracting Terraform outputs..."
+    # Extract outputs for phase 1
     JOB_ID=$(terraform output -raw job_id 2>/dev/null || echo "benchmark-$TIMESTAMP")
     SQS_QUEUE_URL=$(terraform output -raw sqs_queue_url 2>/dev/null || echo "N/A")
     DISCOVERER_INSTANCE_ID=$(terraform output -raw discoverer_instance_id 2>/dev/null || echo "N/A")
-    WORKER_INSTANCE_ID=$(terraform output -raw worker_instance_id 2>/dev/null || echo "N/A")
-    # Get all worker instance IDs as a space-separated list
-    WORKER_INSTANCE_IDS=$(terraform output -json worker_instance_ids 2>/dev/null | jq -r '.[]' 2>/dev/null | tr '\n' ' ' || echo "$WORKER_INSTANCE_ID")
-    DEPLOYED_WORKER_COUNT=$(terraform output -raw worker_count 2>/dev/null || echo "1")
     local ecr_repository=$(terraform output -raw ecr_repository_url 2>/dev/null || echo "N/A")
 
-    # CRITICAL: Get region from terraform - it may differ from AWS_REGION env var
+    # Get region from terraform
     local tf_region
     tf_region=$(terraform output -raw aws_region 2>/dev/null || echo "")
     if [ -n "$tf_region" ] && [ "$tf_region" != "$AWS_REGION" ]; then
@@ -1077,6 +1240,121 @@ EOF
         export AWS_REGION="$tf_region"
         export AWS_DEFAULT_REGION="$tf_region"
     fi
+
+    log_info "  Job ID: $JOB_ID"
+    log_info "  SQS Queue: $SQS_QUEUE_URL"
+    log_info "  Discoverer Instance: $DISCOVERER_INSTANCE_ID"
+
+    # Clean up any stale SSM parameter from previous runs
+    log_info "Cleaning up stale SSM parameters from previous runs..."
+    aws ssm delete-parameter --name "/paraflow/$JOB_ID/discoverer-done" --region "$AWS_REGION" 2>/dev/null || true
+
+    # =========================================================================
+    # Wait for discoverer to populate the queue
+    # =========================================================================
+    echo ""
+    log_info "Waiting for discoverer to populate the queue..."
+
+    local max_wait=600  # 10 minutes max
+    local waited=0
+    local poll_interval=10
+    local last_visible=0
+    local stable_count=0
+
+    while [ $waited -lt $max_wait ]; do
+        # Check queue status
+        local queue_attrs=$(aws sqs get-queue-attributes \
+            --queue-url "$SQS_QUEUE_URL" \
+            --region "$AWS_REGION" \
+            --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible \
+            --output json 2>/dev/null || echo '{}')
+
+        local visible=$(echo "$queue_attrs" | jq -r '.Attributes.ApproximateNumberOfMessages // "0"' 2>/dev/null || echo "0")
+        local in_flight=$(echo "$queue_attrs" | jq -r '.Attributes.ApproximateNumberOfMessagesNotVisible // "0"' 2>/dev/null || echo "0")
+
+        log_info "Queue status: visible=$visible, in_flight=$in_flight (${waited}s elapsed)"
+
+        # Check if discoverer has completed (SSM parameter set)
+        local ssm_value=$(aws ssm get-parameter \
+            --name "/paraflow/$JOB_ID/discoverer-done" \
+            --region "$AWS_REGION" \
+            --query 'Parameter.Value' \
+            --output text 2>/dev/null || echo "")
+
+        if [ -n "$ssm_value" ] && [ "$ssm_value" != "None" ]; then
+            log_success "Discoverer completed! SSM signal received."
+            log_info "Discoverer output: $ssm_value"
+
+            # Get final queue count
+            queue_attrs=$(aws sqs get-queue-attributes \
+                --queue-url "$SQS_QUEUE_URL" \
+                --region "$AWS_REGION" \
+                --attribute-names ApproximateNumberOfMessages \
+                --output json 2>/dev/null || echo '{}')
+            visible=$(echo "$queue_attrs" | jq -r '.Attributes.ApproximateNumberOfMessages // "0"' 2>/dev/null || echo "0")
+            log_success "Queue fully populated with $visible messages"
+            break
+        fi
+
+        # Also check if queue count has stabilized (backup detection)
+        if [ "$visible" -gt 0 ] && [ "$visible" = "$last_visible" ]; then
+            stable_count=$((stable_count + 1))
+            if [ $stable_count -ge 3 ]; then
+                log_warn "Queue count stable at $visible for 30s, assuming discoverer complete"
+                break
+            fi
+        else
+            stable_count=0
+            last_visible=$visible
+        fi
+
+        sleep $poll_interval
+        waited=$((waited + poll_interval))
+    done
+
+    if [ $waited -ge $max_wait ]; then
+        log_warn "Timed out waiting for discoverer after ${max_wait}s"
+        log_info "Proceeding with current queue state: $visible messages"
+    fi
+
+    # =========================================================================
+    # PHASE 2: Deploy workers (worker_count=N)
+    # =========================================================================
+    echo ""
+    log_info "PHASE 2: Deploying $WORKER_COUNT worker(s)..."
+
+    # Record the start time for workers
+    WORKER_START_TIME=$(date +%s)
+
+    cat > "$benchmark_tfvars" <<EOF
+# Benchmark run: $TIMESTAMP - Phase 2 (add workers)
+worker_instance_type       = "$INSTANCE_TYPE"
+worker_count               = $WORKER_COUNT
+worker_threads             = $WORKER_THREADS
+batch_size                 = $BATCH_SIZE
+max_files                  = $MAX_FILES
+enable_detailed_monitoring = true
+benchmark_mode             = true
+bootstrap_timeout_seconds  = 900
+EOF
+
+    log_info "Phase 2 configuration:"
+    log_info "  - worker_instance_type: $INSTANCE_TYPE"
+    log_info "  - worker_count: $WORKER_COUNT"
+    log_info "  - worker_threads: $WORKER_THREADS"
+    log_info "  - batch_size: $BATCH_SIZE"
+
+    echo ""
+    echo "--- Terraform Apply (Phase 2: Workers) ---"
+    terraform apply -var-file="example.tfvars" -var-file="$benchmark_tfvars" -auto-approve
+    echo "--- End Terraform Apply ---"
+    echo ""
+    log_success "Phase 2 complete: Workers deployed"
+
+    # Extract final outputs
+    WORKER_INSTANCE_ID=$(terraform output -raw worker_instance_id 2>/dev/null || echo "N/A")
+    WORKER_INSTANCE_IDS=$(terraform output -json worker_instance_ids 2>/dev/null | jq -r '.[]' 2>/dev/null | tr '\n' ' ' || echo "$WORKER_INSTANCE_ID")
+    DEPLOYED_WORKER_COUNT=$(terraform output -raw worker_count 2>/dev/null || echo "1")
 
     log_success "Infrastructure deployed successfully!"
     log_info "  Job ID: $JOB_ID"
@@ -1087,40 +1365,35 @@ EOF
     log_info "  Worker Count: $DEPLOYED_WORKER_COUNT"
     log_info "  Worker Instance(s): $WORKER_INSTANCE_IDS"
 
-    # Verify instances exist before proceeding
-    log_info "Verifying instances are running..."
+    # Verify worker instances exist before proceeding
+    log_info "Verifying worker instances are running..."
     local max_verify_attempts=30
     local verify_attempt=0
     while [ $verify_attempt -lt $max_verify_attempts ]; do
         verify_attempt=$((verify_attempt + 1))
         local worker_state=$(get_instance_status "$WORKER_INSTANCE_ID")
-        local discoverer_state=$(get_instance_status "$DISCOVERER_INSTANCE_ID")
 
-        # Show current states for debugging
         if [ $verify_attempt -le 3 ] || [ $((verify_attempt % 5)) -eq 0 ]; then
-            log_info "Instance states - worker: $worker_state, discoverer: $discoverer_state"
+            log_info "Worker instance state: $worker_state"
         fi
 
-        if [[ "$worker_state" != ERROR:* ]] && [[ "$discoverer_state" != ERROR:* ]]; then
-            log_success "Instances verified: worker=$worker_state, discoverer=$discoverer_state"
+        if [[ "$worker_state" != ERROR:* ]]; then
+            log_success "Worker instances verified: $worker_state"
             break
         fi
 
-        # Check for credential errors and fail fast
-        if [[ "$worker_state" == ERROR:credentials* ]] || [[ "$discoverer_state" == ERROR:credentials* ]]; then
+        if [[ "$worker_state" == ERROR:credentials* ]]; then
             log_error "AWS credentials error during instance verification!"
-            log_error "Please ensure AWS_PROFILE is set correctly."
             return 1
         fi
 
         if [ $verify_attempt -eq $max_verify_attempts ]; then
-            log_error "Instances failed to start after $max_verify_attempts attempts"
+            log_error "Worker instances failed to start after $max_verify_attempts attempts"
             log_error "Worker status: $worker_state"
-            log_error "Discoverer status: $discoverer_state"
             return 1
         fi
 
-        log_info "Waiting for instances to be ready (attempt $verify_attempt/$max_verify_attempts)..."
+        log_info "Waiting for worker instances to be ready (attempt $verify_attempt/$max_verify_attempts)..."
         sleep 5
     done
 

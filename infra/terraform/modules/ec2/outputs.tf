@@ -28,20 +28,20 @@ output "worker_public_ips" {
   value       = aws_instance.worker[*].public_ip
 }
 
-# Backwards compatibility - return first worker's info
+# Backwards compatibility - return first worker's info (empty string if no workers)
 output "worker_instance_id" {
   description = "Instance ID of the first worker EC2 instance (for backwards compatibility)"
-  value       = aws_instance.worker[0].id
+  value       = length(aws_instance.worker) > 0 ? aws_instance.worker[0].id : ""
 }
 
 output "worker_private_ip" {
   description = "Private IP of the first worker EC2 instance (for backwards compatibility)"
-  value       = aws_instance.worker[0].private_ip
+  value       = length(aws_instance.worker) > 0 ? aws_instance.worker[0].private_ip : ""
 }
 
 output "worker_public_ip" {
   description = "Public IP of the first worker EC2 instance (for backwards compatibility)"
-  value       = aws_instance.worker[0].public_ip
+  value       = length(aws_instance.worker) > 0 ? aws_instance.worker[0].public_ip : ""
 }
 
 output "worker_count" {

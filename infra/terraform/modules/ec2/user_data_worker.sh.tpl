@@ -246,8 +246,8 @@ docker run $DOCKER_ARGS ${ecr_repository}:${image_tag} $WORKER_ARGS 2>&1 | tee "
 EXIT_CODE=$${PIPESTATUS[0]}
 DURATION=$(($(date +%s) - CONTAINER_START))
 
-# Parse metrics
-FILES=$(grep "Files processed:" "$WORKER_LOG" 2>/dev/null | grep -oP '\d+' | head -1 || echo "0")
+# Parse metrics (handle comma-formatted numbers like "4,069")
+FILES=$(grep "Files processed:" "$WORKER_LOG" 2>/dev/null | grep -oP '[\d,]+' | head -1 | tr -d ',' || echo "0")
 RECORDS=$(grep "Records processed:" "$WORKER_LOG" 2>/dev/null | grep -oP '[\d,]+' | head -1 | tr -d ',' || echo "0")
 REC_SEC=$(grep "records/sec" "$WORKER_LOG" 2>/dev/null | grep -oP '[\d,]+' | head -1 | tr -d ',' || echo "0")
 MB_SEC=$(grep "MB/s read" "$WORKER_LOG" 2>/dev/null | grep -oP '[\d.]+' | head -1 || echo "0")
