@@ -389,7 +389,12 @@ mod tests {
         // Pop items - should be FIFO
         for i in 0..3 {
             let item = buffer.pop_ready().await.unwrap();
-            assert!(item.message.work_item.file_uri.contains(&format!("file{}", i)));
+            assert!(
+                item.message
+                    .work_item
+                    .file_uri
+                    .contains(&format!("file{}", i))
+            );
         }
 
         // Should be empty now

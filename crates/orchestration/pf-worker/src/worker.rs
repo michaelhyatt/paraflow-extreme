@@ -450,7 +450,10 @@ async fn worker_thread_with_prefetch<S: WorkQueue>(
                 Err(mpsc::error::TryRecvError::Empty) => break,
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     // Channel closed - process remaining prefetched items then exit
-                    debug!(thread = thread_id, "Channel closed, processing remaining prefetched items");
+                    debug!(
+                        thread = thread_id,
+                        "Channel closed, processing remaining prefetched items"
+                    );
                     break;
                 }
             }

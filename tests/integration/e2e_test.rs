@@ -3,7 +3,7 @@
 //! These tests verify the complete pipeline: discover → queue → process.
 //! They exercise the full flow from file discovery through to worker processing.
 
-use crate::common::{generate_test_ndjson, LocalStackTestContext};
+use crate::common::{LocalStackTestContext, generate_test_ndjson};
 use chrono::Utc;
 use pf_discoverer::{
     Discoverer, DiscoveryConfig, MatchAllFilter, PatternFilter, S3Config, SqsConfig, SqsOutput,
@@ -81,9 +81,10 @@ async fn test_e2e_discover_to_worker() {
         .with_wait_time(1)
         .with_drain_mode(true);
 
-    let source = SqsSource::from_config_with_endpoint(sqs_source_config, &ctx.endpoint, &ctx.region)
-        .await
-        .unwrap();
+    let source =
+        SqsSource::from_config_with_endpoint(sqs_source_config, &ctx.endpoint, &ctx.region)
+            .await
+            .unwrap();
 
     let reader_config = NdjsonReaderConfig::new(&ctx.region)
         .with_endpoint(&ctx.endpoint)
@@ -187,9 +188,10 @@ async fn test_e2e_with_filtering() {
         .with_wait_time(1)
         .with_drain_mode(true);
 
-    let source = SqsSource::from_config_with_endpoint(sqs_source_config, &ctx.endpoint, &ctx.region)
-        .await
-        .unwrap();
+    let source =
+        SqsSource::from_config_with_endpoint(sqs_source_config, &ctx.endpoint, &ctx.region)
+            .await
+            .unwrap();
 
     let reader_config = NdjsonReaderConfig::new(&ctx.region)
         .with_endpoint(&ctx.endpoint)
@@ -290,9 +292,10 @@ async fn test_e2e_with_dlq() {
         .with_wait_time(1)
         .with_drain_mode(true);
 
-    let source = SqsSource::from_config_with_endpoint(sqs_source_config, &ctx.endpoint, &ctx.region)
-        .await
-        .unwrap();
+    let source =
+        SqsSource::from_config_with_endpoint(sqs_source_config, &ctx.endpoint, &ctx.region)
+            .await
+            .unwrap();
 
     let reader_config = NdjsonReaderConfig::new(&ctx.region)
         .with_endpoint(&ctx.endpoint)
@@ -389,9 +392,10 @@ async fn test_e2e_large_batch() {
         .with_wait_time(1)
         .with_drain_mode(true);
 
-    let source = SqsSource::from_config_with_endpoint(sqs_source_config, &ctx.endpoint, &ctx.region)
-        .await
-        .unwrap();
+    let source =
+        SqsSource::from_config_with_endpoint(sqs_source_config, &ctx.endpoint, &ctx.region)
+            .await
+            .unwrap();
 
     let reader_config = NdjsonReaderConfig::new(&ctx.region)
         .with_endpoint(&ctx.endpoint)
@@ -401,7 +405,9 @@ async fn test_e2e_large_batch() {
     let destination = Arc::new(StatsDestination::new());
 
     // Use multiple threads and enable prefetch
-    let worker_config = WorkerConfig::new().with_thread_count(4).with_batch_size(500);
+    let worker_config = WorkerConfig::new()
+        .with_thread_count(4)
+        .with_batch_size(500);
 
     let worker = Worker::new(worker_config, source, reader, destination);
     let worker_stats = worker.run().await.unwrap();
@@ -485,9 +491,10 @@ async fn test_e2e_nested_directory_structure() {
         .with_wait_time(1)
         .with_drain_mode(true);
 
-    let source = SqsSource::from_config_with_endpoint(sqs_source_config, &ctx.endpoint, &ctx.region)
-        .await
-        .unwrap();
+    let source =
+        SqsSource::from_config_with_endpoint(sqs_source_config, &ctx.endpoint, &ctx.region)
+            .await
+            .unwrap();
 
     let reader_config = NdjsonReaderConfig::new(&ctx.region)
         .with_endpoint(&ctx.endpoint)

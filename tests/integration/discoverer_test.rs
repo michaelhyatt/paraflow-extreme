@@ -3,10 +3,10 @@
 //! These tests verify that the Discoverer can correctly list and filter
 //! files from S3 buckets using LocalStack.
 
-use crate::common::{generate_test_ndjson, generate_test_parquet, LocalStackTestContext};
+use crate::common::{LocalStackTestContext, generate_test_ndjson, generate_test_parquet};
 use pf_discoverer::{
-    DiscoveredFile, Discoverer, DiscoveryConfig, MatchAllFilter, Output, PatternFilter,
-    S3Config, SizeFilter, create_s3_client,
+    DiscoveredFile, Discoverer, DiscoveryConfig, MatchAllFilter, Output, PatternFilter, S3Config,
+    SizeFilter, create_s3_client,
 };
 use pf_error::Result;
 use std::sync::{Arc, Mutex};

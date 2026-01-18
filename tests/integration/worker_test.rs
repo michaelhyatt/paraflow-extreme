@@ -3,7 +3,7 @@
 //! These tests verify that the Worker can correctly process files from SQS
 //! and read data from S3 using LocalStack.
 
-use crate::common::{generate_test_ndjson, generate_test_parquet, LocalStackTestContext};
+use crate::common::{LocalStackTestContext, generate_test_ndjson, generate_test_parquet};
 use chrono::Utc;
 use pf_reader_ndjson::{NdjsonReader, NdjsonReaderConfig};
 use pf_types::{DestinationConfig, FileFormat, WorkItem};

@@ -29,11 +29,7 @@ pub struct Prefetcher {
 
 impl Prefetcher {
     /// Create a new prefetcher.
-    pub fn new(
-        thread_id: u32,
-        config: PrefetchConfig,
-        reader: Arc<dyn StreamingReader>,
-    ) -> Self {
+    pub fn new(thread_id: u32, config: PrefetchConfig, reader: Arc<dyn StreamingReader>) -> Self {
         let buffer = Arc::new(PrefetchBuffer::new(
             thread_id,
             config.max_prefetch_count,
@@ -189,7 +185,7 @@ mod tests {
     use pf_traits::{BatchStream, FileMetadata};
     use pf_types::{Batch, DestinationConfig, FileFormat, WorkItem};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
 
     struct MockReader {
         call_count: AtomicUsize,

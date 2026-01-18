@@ -57,6 +57,6 @@ mod buffer;
 mod config;
 mod prefetcher;
 
-pub use buffer::{PrefetchBuffer, PrefetchedItem, PrefetchError};
-pub use config::{PrefetchConfig, DEFAULT_MAX_MEMORY_BYTES, DEFAULT_MAX_PREFETCH_COUNT};
+pub use buffer::{PrefetchBuffer, PrefetchError, PrefetchedItem};
+pub use config::{DEFAULT_MAX_MEMORY_BYTES, DEFAULT_MAX_PREFETCH_COUNT, PrefetchConfig};
 pub use prefetcher::{Prefetcher, PrefetcherStats};

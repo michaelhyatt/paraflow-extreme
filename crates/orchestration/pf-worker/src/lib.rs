@@ -67,7 +67,7 @@ pub use config::WorkerConfig;
 pub use destination::{DestinationType, StatsDestination, StdoutDestination, create_destination};
 pub use metadata_cache::MetadataCache;
 pub use pipeline::{Pipeline, ThreadStats};
-pub use prefetch::{PrefetchConfig, PrefetchBuffer, Prefetcher};
+pub use prefetch::{PrefetchBuffer, PrefetchConfig, Prefetcher};
 pub use reader::{FormatDispatchReader, ReaderFactory, ReaderFactoryConfig, create_reader};
 pub use router::WorkRouter;
 pub use source::{QueueMessage, SqsSource, SqsSourceConfig, StdinSource, WorkQueue};

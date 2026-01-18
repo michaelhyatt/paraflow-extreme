@@ -137,7 +137,11 @@ impl MetadataCache {
             cache.retain(|_, entry| now.duration_since(entry.cached_at) < self.ttl);
             let removed = before - cache.len();
             if removed > 0 {
-                debug!(removed, remaining = cache.len(), "Cleaned up expired cache entries");
+                debug!(
+                    removed,
+                    remaining = cache.len(),
+                    "Cleaned up expired cache entries"
+                );
             }
         }
     }
@@ -183,7 +187,10 @@ mod tests {
 
         // Fill the cache
         for i in 0..3 {
-            cache.insert(&format!("s3://bucket/file{}.parquet", i), create_test_metadata(i as u64));
+            cache.insert(
+                &format!("s3://bucket/file{}.parquet", i),
+                create_test_metadata(i as u64),
+            );
         }
         assert_eq!(cache.len(), 3);
 
@@ -261,6 +268,6 @@ mod tests {
         }
 
         // Cache should have entries (may have evicted some due to capacity)
-        assert!(cache.len() > 0);
+        assert!(!cache.is_empty());
     }
 }

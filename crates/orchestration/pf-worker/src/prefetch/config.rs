@@ -104,10 +104,14 @@ impl PrefetchConfig {
     /// Validate the configuration.
     pub fn validate(&self) -> Result<(), String> {
         if self.enabled && self.max_prefetch_count == 0 {
-            return Err("max_prefetch_count must be at least 1 when prefetching is enabled".to_string());
+            return Err(
+                "max_prefetch_count must be at least 1 when prefetching is enabled".to_string(),
+            );
         }
         if self.enabled && self.max_memory_bytes == 0 {
-            return Err("max_memory_bytes must be at least 1 when prefetching is enabled".to_string());
+            return Err(
+                "max_memory_bytes must be at least 1 when prefetching is enabled".to_string(),
+            );
         }
         Ok(())
     }
