@@ -9,6 +9,7 @@ use arrow_json::ReaderBuilder;
 use async_compression::tokio::bufread::{GzipDecoder, ZstdDecoder};
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
+use object_store::ClientOptions;
 use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
@@ -21,6 +22,7 @@ use std::io::BufRead;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
+use std::time::Duration;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
 use tokio_util::io::StreamReader;
 use tracing::{debug, info, trace};
@@ -121,6 +123,28 @@ impl Compression {
 /// Cache key for local filesystem object store.
 const LOCAL_STORE_KEY: &str = "__local__";
 
+/// Create optimized HTTP client options for S3 connection pooling.
+///
+/// Configures the HTTP client for high-throughput S3 access:
+/// - Connection pool sized for concurrent requests
+/// - Appropriate timeouts for bulk data transfer
+/// - HTTP/2 keep-alive for persistent connections
+fn create_s3_client_options() -> ClientOptions {
+    ClientOptions::new()
+        // Connection pool: allow many idle connections per host for parallel requests
+        .with_pool_max_idle_per_host(100)
+        // Keep idle connections alive for 90 seconds (match default)
+        .with_pool_idle_timeout(Duration::from_secs(90))
+        // Request timeout: 5 minutes for large file downloads
+        .with_timeout(Duration::from_secs(300))
+        // Connect timeout: 10 seconds
+        .with_connect_timeout(Duration::from_secs(10))
+        // HTTP/2 keep-alive to maintain persistent connections
+        .with_http2_keep_alive_interval(Duration::from_secs(30))
+        .with_http2_keep_alive_timeout(Duration::from_secs(20))
+        .with_http2_keep_alive_while_idle(true)
+}
+
 /// Streaming NDJSON file reader.
 ///
 /// Uses streaming I/O to read NDJSON files with O(batch_size) memory,
@@ -201,10 +225,12 @@ impl NdjsonReader {
             Arc::new(LocalFileSystem::new())
         } else {
             // cache_key is the bucket name for S3
-            debug!(bucket = cache_key, "Creating new S3 object store");
+            debug!(bucket = cache_key, "Creating new S3 object store with connection pooling");
             let mut builder = AmazonS3Builder::new()
                 .with_bucket_name(cache_key)
-                .with_region(&self.config.region);
+                .with_region(&self.config.region)
+                // Use shared HTTP connection pool with optimized settings
+                .with_client_options(create_s3_client_options());
 
             // Use explicit credentials if provided (resolved by caller via AWS SDK)
             if let (Some(access_key), Some(secret_key)) =
