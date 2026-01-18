@@ -1,0 +1,24 @@
+# Gitleaks configuration for paraflow-extreme
+# https://github.com/gitleaks/gitleaks
+
+title = "paraflow-extreme secret scanning"
+
+# Use the default gitleaks rules
+[extend]
+useDefault = true
+
+# Paths to ignore during scanning
+[allowlist]
+  description = "Global allowlist"
+  paths = [
+    # Ignore example/template files
+    '''\.env\.example$''',
+    '''\.tfvars\.template$''',
+    # Ignore lock files
+    '''Cargo\.lock$''',
+    # Ignore test fixtures that may contain fake credentials
+    '''testing/.*''',
+    '''tests/.*fixtures.*''',
+    # Ignore build artifacts
+    '''target/.*''',
+  ]
