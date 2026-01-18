@@ -11,6 +11,9 @@ name = "pf-discoverer"
 path = "src/main.rs"
 
 [dependencies]
+# Memory allocator for multi-threaded performance
+mimalloc = { version = "0.1", default-features = false }
+
 # CLI
 clap = { workspace = true }
 

@@ -3,6 +3,14 @@
 //! High-throughput data processing worker for paraflow-extreme.
 
 use clap::Parser;
+
+/// Use mimalloc as the global allocator for improved multi-threaded performance.
+///
+/// mimalloc provides better scaling and reduced contention compared to the
+/// system allocator, which is particularly beneficial for data-intensive
+/// workloads with many parallel threads.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use pf_cli_common::{format_bytes, format_number};
 
 mod args;
