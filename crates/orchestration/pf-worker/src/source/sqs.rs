@@ -2,6 +2,7 @@
 
 use super::parse_work_item;
 use async_trait::async_trait;
+use aws_sdk_sqs::types::QueueAttributeName;
 use aws_sdk_sqs::Client;
 use chrono::Utc;
 use pf_error::{PfError, QueueError, Result};
@@ -142,6 +143,46 @@ impl SqsSource {
     pub fn stop(&self) {
         self.stopped.store(true, Ordering::Relaxed);
     }
+
+    /// Check if queue is truly empty (no visible + no in-flight messages).
+    ///
+    /// This is used in drain mode to verify the queue is actually empty before
+    /// signaling completion. This prevents premature termination when multiple
+    /// workers are processing and one worker receives an empty batch while
+    /// messages are still in-flight with other workers.
+    async fn is_queue_empty(&self) -> Result<bool> {
+        let response = self
+            .client
+            .get_queue_attributes()
+            .queue_url(&self.config.queue_url)
+            .attribute_names(QueueAttributeName::ApproximateNumberOfMessages)
+            .attribute_names(QueueAttributeName::ApproximateNumberOfMessagesNotVisible)
+            .send()
+            .await
+            .map_err(|e| {
+                PfError::Queue(QueueError::Receive(format!(
+                    "GetQueueAttributes failed: {}",
+                    e
+                )))
+            })?;
+
+        let attrs = response.attributes.unwrap_or_default();
+        let visible: i64 = attrs
+            .get(&QueueAttributeName::ApproximateNumberOfMessages)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let in_flight: i64 = attrs
+            .get(&QueueAttributeName::ApproximateNumberOfMessagesNotVisible)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+
+        debug!(
+            visible = visible,
+            in_flight = in_flight,
+            "Queue status check"
+        );
+        Ok(visible == 0 && in_flight == 0)
+    }
 }
 
 #[async_trait]
@@ -172,16 +213,30 @@ impl WorkQueue for SqsSource {
         let sqs_messages = response.messages.unwrap_or_default();
         debug!("Received {} messages from SQS", sqs_messages.len());
 
-        // Handle drain mode: exit when queue is empty
+        // Handle drain mode: exit when queue is truly empty
         if sqs_messages.is_empty() {
             if self.config.drain_mode {
                 let count = self.empty_receive_count.fetch_add(1, Ordering::Relaxed) + 1;
                 debug!("Empty receive #{} in drain mode", count);
-                // After one empty long-poll, consider the queue drained
+
+                // After empty long-poll, verify queue is truly empty
+                // This prevents premature termination when multiple workers are active
+                // and one gets an empty batch while messages are in-flight with others
                 if count >= 1 {
-                    info!("Queue drained, signaling completion");
-                    self.stopped.store(true, Ordering::Relaxed);
-                    return Ok(None);
+                    match self.is_queue_empty().await {
+                        Ok(true) => {
+                            info!("Queue drained (verified empty), signaling completion");
+                            self.stopped.store(true, Ordering::Relaxed);
+                            return Ok(None);
+                        }
+                        Ok(false) => {
+                            debug!("Queue has in-flight messages, continuing to poll");
+                            // Don't reset counter - other workers have the messages
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to check queue status, continuing to poll");
+                        }
+                    }
                 }
             }
             return Ok(Some(vec![]));
