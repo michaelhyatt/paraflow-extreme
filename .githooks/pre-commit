@@ -1,0 +1,6 @@
+#!/bin/bash
+# Pre-commit hook to scan for secrets using Gitleaks
+# Install: git config core.hooksPath .githooks
+# Requires: brew install gitleaks (or see https://github.com/gitleaks/gitleaks#installing)
+
+gitleaks protect --staged --verbose
