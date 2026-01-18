@@ -39,7 +39,7 @@ resource "aws_iam_role_policy" "paraflow" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       # ECR - pull images
       {
         Effect = "Allow"
@@ -116,7 +116,19 @@ resource "aws_iam_role_policy" "paraflow" {
         ]
         Resource = "*"
       }
-    ]
+    ], var.enable_profiling && var.artifacts_bucket != "" ? [
+      # S3 - upload profiling artifacts
+      {
+        Sid    = "ProfilingArtifactsUpload"
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject"
+        ]
+        Resource = [
+          "arn:aws:s3:::${var.artifacts_bucket}/profiling/*"
+        ]
+      }
+    ] : [])
   })
 }
 
@@ -274,6 +286,8 @@ resource "aws_instance" "worker" {
     enable_detailed_monitoring  = var.enable_detailed_monitoring
     bootstrap_timeout_seconds   = var.bootstrap_timeout_seconds
     benchmark_mode              = var.benchmark_mode
+    enable_profiling            = var.enable_profiling
+    artifacts_bucket            = var.artifacts_bucket
   }))
 
   tags = merge(

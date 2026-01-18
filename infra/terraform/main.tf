@@ -106,6 +106,10 @@ module "ec2" {
   bootstrap_timeout_seconds  = var.bootstrap_timeout_seconds
   benchmark_mode             = var.benchmark_mode
 
+  # Profiling
+  enable_profiling = var.enable_profiling
+  artifacts_bucket = var.artifacts_bucket
+
   # Implicit dependencies via sqs_queue_url, sqs_queue_arn, and log_group_name
   # Terraform automatically orders creation based on these references
 }

@@ -1,5 +1,7 @@
 //! CLI argument definitions for pf-worker.
 
+use std::path::PathBuf;
+
 use clap::{Parser, ValueEnum};
 pub use pf_cli_common::LogLevel;
 
@@ -134,6 +136,22 @@ pub struct Cli {
     /// Log level
     #[arg(short = 'l', long, value_enum, default_value = "info")]
     pub log_level: LogLevel,
+
+    // === Profiling ===
+    /// Path to write tokio runtime metrics (JSONL format).
+    /// Metrics are written every second.
+    #[arg(long, value_name = "PATH")]
+    pub metrics_file: Option<PathBuf>,
+
+    /// Directory to write CPU profile snapshots.
+    /// Requires build with --features profiling.
+    #[arg(long, value_name = "DIR")]
+    pub profile_dir: Option<PathBuf>,
+
+    /// Interval between CPU profile snapshots in seconds.
+    /// Each snapshot captures 10 seconds of activity.
+    #[arg(long, default_value = "60", value_name = "SECS")]
+    pub profile_interval: u64,
 }
 
 /// Input source type.

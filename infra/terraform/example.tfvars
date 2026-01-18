@@ -58,6 +58,18 @@ bootstrap_timeout_seconds = 600  # 10 minutes
 benchmark_mode = false
 
 # ============================================================================
+# Profiling Configuration
+# ============================================================================
+
+# Enable profiling artifact collection and S3 upload
+# Captures tokio runtime metrics (JSONL) and optional CPU flamegraphs (SVG)
+enable_profiling = false
+
+# S3 bucket for profiling artifacts (required if enable_profiling=true)
+# Artifacts are uploaded to s3://{bucket}/profiling/{job_id}/
+artifacts_bucket = ""  # e.g., "my-paraflow-artifacts"
+
+# ============================================================================
 # Recommended Instance Types for Different Workloads
 # ============================================================================
 #

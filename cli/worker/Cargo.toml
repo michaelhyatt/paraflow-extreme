@@ -33,5 +33,22 @@ tracing-subscriber = { workspace = true }
 # Error handling
 anyhow = { workspace = true }
 
+# Profiling
+tokio-metrics = "0.4"
+serde_json = { workspace = true }
+chrono = { workspace = true }
+
+[dependencies.pprof]
+version = "0.14"
+features = ["flamegraph"]
+optional = true
+
+[features]
+default = []
+profiling = ["pprof"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
+
 [build-dependencies]
 built = { version = "0.7", features = ["git2", "chrono"] }

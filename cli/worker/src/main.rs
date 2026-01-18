@@ -6,6 +6,7 @@ use clap::Parser;
 use pf_cli_common::{format_bytes, format_number};
 
 mod args;
+mod profiling;
 mod progress;
 mod run;
 
@@ -26,6 +27,15 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize logging (to stderr, so stdout is clean for output)
     run::init_logging(args.log_level)?;
+
+    // Start optional profiling collectors
+    if let Some(ref path) = args.metrics_file {
+        profiling::start_metrics_collector(path.to_str().unwrap());
+    }
+
+    if let Some(ref dir) = args.profile_dir {
+        profiling::start_periodic_profiler(dir.to_str().unwrap(), args.profile_interval);
+    }
 
     // Run worker
     let stats = run::execute(args).await?;
