@@ -2,10 +2,11 @@
 
 use crate::config::WorkerConfig;
 use crate::pipeline::{Pipeline, ProcessingResult};
+use crate::prefetch::{PrefetchConfig, PrefetchError, Prefetcher};
 use crate::router::WorkRouter;
 use crate::source::{QueueMessage, WorkQueue};
 use crate::stats::{StatsSnapshot, WorkerStats};
-use pf_error::{ErrorCategory, Result};
+use pf_error::{ErrorCategory, ProcessingStage, Result};
 use pf_traits::{BatchIndexer, FailureContext, StreamingReader};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,7 +14,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 /// High-throughput data processing worker.
 ///
@@ -60,10 +61,15 @@ impl<S: WorkQueue + 'static, R: StreamingReader + 'static> Worker<S, R> {
 
     /// Run the worker until the source is exhausted or shutdown is signaled.
     pub async fn run(&self) -> Result<StatsSnapshot> {
+        let prefetch_enabled = self.config.prefetch.enabled;
+
         info!(
             threads = self.config.thread_count,
             batch_size = self.config.batch_size,
             shutdown_timeout_secs = self.config.shutdown_timeout.as_secs(),
+            prefetch_enabled,
+            prefetch_count = self.config.prefetch.max_prefetch_count,
+            prefetch_memory_mb = self.config.prefetch.max_memory_bytes / (1024 * 1024),
             "Starting worker"
         );
 
@@ -93,19 +99,36 @@ impl<S: WorkQueue + 'static, R: StreamingReader + 'static> Worker<S, R> {
             let max_retries = self.config.max_retries;
             let cancel_token = cancellation_token.child_token();
             let status = worker_statuses[thread_id].clone();
+            let prefetch_config = self.config.prefetch.clone();
 
-            let handle = tokio::spawn(async move {
-                worker_thread(
-                    thread_id as u32,
-                    rx,
-                    pipeline,
-                    source,
-                    max_retries,
-                    cancel_token,
-                    status,
-                )
-                .await;
-            });
+            let handle = if prefetch_enabled {
+                tokio::spawn(async move {
+                    worker_thread_with_prefetch(
+                        thread_id as u32,
+                        rx,
+                        pipeline,
+                        source,
+                        max_retries,
+                        cancel_token,
+                        status,
+                        prefetch_config,
+                    )
+                    .await;
+                })
+            } else {
+                tokio::spawn(async move {
+                    worker_thread(
+                        thread_id as u32,
+                        rx,
+                        pipeline,
+                        source,
+                        max_retries,
+                        cancel_token,
+                        status,
+                    )
+                    .await;
+                })
+            };
             worker_handles.push(handle);
         }
 
@@ -377,6 +400,213 @@ async fn worker_thread<S: WorkQueue>(
     }
 
     debug!(thread = thread_id, "Worker thread stopped");
+}
+
+/// Worker thread with async I/O prefetching.
+///
+/// This variant overlaps S3 downloads with processing by prefetching files
+/// while the current file is being processed. This significantly improves
+/// throughput when the workload is I/O-latency-bound.
+///
+/// The prefetch flow:
+/// 1. Start prefetching for queued messages (non-blocking)
+/// 2. Get next item (prefetched or direct from channel)
+/// 3. Process with optional pre-opened stream
+/// 4. Handle ack/nack/dlq (unchanged from regular worker)
+#[allow(clippy::too_many_arguments)]
+async fn worker_thread_with_prefetch<S: WorkQueue>(
+    thread_id: u32,
+    mut rx: mpsc::Receiver<QueueMessage>,
+    pipeline: Pipeline,
+    source: Arc<S>,
+    max_retries: u32,
+    cancel_token: CancellationToken,
+    status: Arc<WorkerStatus>,
+    prefetch_config: PrefetchConfig,
+) {
+    debug!(
+        thread = thread_id,
+        max_prefetch = prefetch_config.max_prefetch_count,
+        memory_budget_mb = prefetch_config.max_memory_bytes / (1024 * 1024),
+        "Worker thread with prefetch started"
+    );
+
+    // Create the prefetcher
+    let prefetcher = Prefetcher::new(thread_id, prefetch_config, pipeline.reader().clone());
+    let buffer = prefetcher.buffer();
+
+    loop {
+        // 1. Start prefetching for any queued messages while we can
+        while prefetcher.can_prefetch() {
+            match rx.try_recv() {
+                Ok(msg) => {
+                    trace!(
+                        thread = thread_id,
+                        file = %msg.work_item.file_uri,
+                        "Starting prefetch for queued message"
+                    );
+                    prefetcher.spawn_prefetch(msg);
+                }
+                Err(mpsc::error::TryRecvError::Empty) => break,
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    // Channel closed - process remaining prefetched items then exit
+                    debug!(thread = thread_id, "Channel closed, processing remaining prefetched items");
+                    break;
+                }
+            }
+        }
+
+        // 2. Check for prefetch errors first
+        if let Some(prefetch_error) = buffer.pop_error().await {
+            let PrefetchError { message, error } = prefetch_error;
+            let receipt_handle = message.receipt_handle.clone();
+            let file_uri = message.work_item.file_uri.clone();
+
+            warn!(
+                thread = thread_id,
+                file = %file_uri,
+                error = %error,
+                "Prefetch failed, handling error"
+            );
+
+            // Create a failure result for the prefetch error
+            let result = ProcessingResult::failure(error, ProcessingStage::S3Download);
+
+            // Handle the result (will likely retry or DLQ)
+            handle_ack_action(
+                &handle_result(&result, &message, max_retries),
+                &source,
+                thread_id,
+                &receipt_handle,
+            )
+            .await;
+
+            continue;
+        }
+
+        // 3. Get next item - prefer prefetched, fall back to channel
+        let (message, stream) = {
+            // Try to get a prefetched item first
+            if let Some(item) = buffer.pop_ready().await {
+                trace!(
+                    thread = thread_id,
+                    file = %item.message.work_item.file_uri,
+                    "Using prefetched stream"
+                );
+                (item.message, Some(item.stream))
+            } else {
+                // No prefetched items, wait for channel or cancellation
+                tokio::select! {
+                    biased;
+
+                    // Check for cancellation
+                    _ = cancel_token.cancelled() => {
+                        debug!(thread = thread_id, "Worker received cancellation signal");
+                        break;
+                    }
+
+                    // Wait for next message from channel
+                    message = rx.recv() => {
+                        match message {
+                            Some(msg) => {
+                                trace!(
+                                    thread = thread_id,
+                                    file = %msg.work_item.file_uri,
+                                    "Processing message directly (no prefetch available)"
+                                );
+                                (msg, None)
+                            }
+                            None => {
+                                // Channel closed and no more prefetched items
+                                if !buffer.has_pending_work().await {
+                                    debug!(thread = thread_id, "Channel closed, no pending work");
+                                    break;
+                                }
+                                // Still have in-flight prefetches, wait a bit
+                                tokio::time::sleep(Duration::from_millis(10)).await;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        let receipt_handle = message.receipt_handle.clone();
+        let file_uri = message.work_item.file_uri.clone();
+
+        // Update status for shutdown diagnostics
+        status.start_processing(&file_uri);
+
+        // 4. Process the message
+        let result = match stream {
+            Some(s) => {
+                // Use prefetched stream
+                pipeline.process_with_stream(&message, s).await
+            }
+            None => {
+                // No prefetch available, process normally
+                pipeline.process(&message).await
+            }
+        };
+
+        // Mark processing complete
+        status.finish_processing();
+
+        // 5. Handle the result
+        handle_ack_action(
+            &handle_result(&result, &message, max_retries),
+            &source,
+            thread_id,
+            &receipt_handle,
+        )
+        .await;
+    }
+
+    debug!(thread = thread_id, "Worker thread with prefetch stopped");
+}
+
+/// Helper to handle ack/nack/dlq actions.
+async fn handle_ack_action<S: WorkQueue>(
+    action: &AckAction,
+    source: &Arc<S>,
+    thread_id: u32,
+    receipt_handle: &str,
+) {
+    match action {
+        AckAction::Ack => {
+            if let Err(e) = source.ack(receipt_handle).await {
+                error!(
+                    thread = thread_id,
+                    message = %receipt_handle,
+                    error = %e,
+                    "Failed to ack message"
+                );
+            }
+        }
+        AckAction::Retry(failure) => {
+            if let Err(e) = source.nack(receipt_handle).await {
+                error!(
+                    thread = thread_id,
+                    message = %receipt_handle,
+                    error = %e,
+                    "Failed to nack message for retry"
+                );
+            }
+            // Failure context is in the closure, we don't need to use it here
+            let _ = failure;
+        }
+        AckAction::Dlq(failure) => {
+            if let Err(e) = source.move_to_dlq(receipt_handle, failure).await {
+                error!(
+                    thread = thread_id,
+                    message = %receipt_handle,
+                    error = %e,
+                    "Failed to move message to DLQ"
+                );
+            }
+        }
+    }
 }
 
 /// Action to take after processing a message.
