@@ -8,7 +8,7 @@ use chrono::Utc;
 use pf_error::{PfError, QueueError, Result};
 use pf_traits::{FailureContext, QueueMessage, WorkQueue};
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use tracing::{debug, error, info, warn};
 
 /// Configuration for the SQS source.
@@ -104,6 +104,12 @@ pub struct SqsSource {
 
     /// Counter for consecutive empty receives (for drain mode)
     empty_receive_count: AtomicU32,
+
+    /// Last observed in-flight message count (for detecting stuck queues)
+    last_in_flight: AtomicI64,
+
+    /// Counter for consecutive checks with same in-flight count
+    stalled_count: AtomicU32,
 }
 
 impl SqsSource {
@@ -114,6 +120,8 @@ impl SqsSource {
             config,
             stopped: AtomicBool::new(false),
             empty_receive_count: AtomicU32::new(0),
+            last_in_flight: AtomicI64::new(-1),
+            stalled_count: AtomicU32::new(0),
         }
     }
 
@@ -144,13 +152,13 @@ impl SqsSource {
         self.stopped.store(true, Ordering::Relaxed);
     }
 
-    /// Check if queue is truly empty (no visible + no in-flight messages).
+    /// Check queue status and return (visible, in_flight) message counts.
     ///
     /// This is used in drain mode to verify the queue is actually empty before
     /// signaling completion. This prevents premature termination when multiple
     /// workers are processing and one worker receives an empty batch while
     /// messages are still in-flight with other workers.
-    async fn is_queue_empty(&self) -> Result<bool> {
+    async fn get_queue_status(&self) -> Result<(i64, i64)> {
         let response = self
             .client
             .get_queue_attributes()
@@ -181,7 +189,7 @@ impl SqsSource {
             in_flight = in_flight,
             "Queue status check"
         );
-        Ok(visible == 0 && in_flight == 0)
+        Ok((visible, in_flight))
     }
 }
 
@@ -216,38 +224,49 @@ impl WorkQueue for SqsSource {
         // Handle drain mode: exit when queue is truly empty
         if sqs_messages.is_empty() {
             if self.config.drain_mode {
-                let count = self.empty_receive_count.fetch_add(1, Ordering::Relaxed) + 1;
-                debug!("Empty receive #{} in drain mode", count);
+                let empty_count = self.empty_receive_count.fetch_add(1, Ordering::Relaxed) + 1;
+                debug!("Empty receive #{} in drain mode", empty_count);
 
                 // After empty long-poll, verify queue is truly empty
                 // This prevents premature termination when multiple workers are active
                 // and one gets an empty batch while messages are in-flight with others
-                match self.is_queue_empty().await {
-                    Ok(true) => {
-                        info!("Queue drained (verified empty), signaling completion");
-                        self.stopped.store(true, Ordering::Relaxed);
-                        return Ok(None);
-                    }
-                    Ok(false) => {
-                        // Messages are in-flight with other workers. However, if we've had
-                        // many consecutive empty receives, those workers may have crashed
-                        // and their messages will become visible after visibility timeout.
-                        // With 20s long-poll and 300s visibility timeout, 15+ empty receives
-                        // means we've waited long enough for orphaned messages to reappear.
-                        let max_empty_receives =
-                            (self.config.visibility_timeout / self.config.wait_time_seconds) + 1;
-                        if count >= max_empty_receives as u32 {
-                            warn!(
-                                "Exceeded {} empty receives with in-flight messages, assuming orphaned - exiting",
-                                max_empty_receives
-                            );
+                match self.get_queue_status().await {
+                    Ok((visible, in_flight)) => {
+                        if visible == 0 && in_flight == 0 {
+                            info!("Queue drained (verified empty), signaling completion");
                             self.stopped.store(true, Ordering::Relaxed);
                             return Ok(None);
                         }
-                        debug!(
-                            "Queue has in-flight messages, continuing to poll ({}/{})",
-                            count, max_empty_receives
-                        );
+
+                        // Messages are in-flight with other workers. Track if progress is being made.
+                        let last = self.last_in_flight.swap(in_flight, Ordering::Relaxed);
+                        if in_flight > 0 && in_flight == last {
+                            // In-flight count hasn't changed - workers may be stuck or crashed
+                            let stalled = self.stalled_count.fetch_add(1, Ordering::Relaxed) + 1;
+                            let max_stalled = (self.config.visibility_timeout
+                                / self.config.wait_time_seconds)
+                                + 1;
+
+                            if stalled >= max_stalled as u32 {
+                                warn!(
+                                    "In-flight messages stuck at {} for {} checks, assuming orphaned - exiting",
+                                    in_flight, stalled
+                                );
+                                self.stopped.store(true, Ordering::Relaxed);
+                                return Ok(None);
+                            }
+                            debug!(
+                                "Queue has {} in-flight messages (stuck for {}/{} checks)",
+                                in_flight, stalled, max_stalled
+                            );
+                        } else {
+                            // In-flight count changed - progress is being made
+                            self.stalled_count.store(0, Ordering::Relaxed);
+                            debug!(
+                                "Queue has {} visible, {} in-flight messages (was {}), waiting",
+                                visible, in_flight, last
+                            );
+                        }
                     }
                     Err(e) => {
                         warn!(error = %e, "Failed to check queue status, continuing to poll");
