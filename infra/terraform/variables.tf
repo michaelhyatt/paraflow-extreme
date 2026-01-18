@@ -167,7 +167,7 @@ variable "log_retention_days" {
 variable "enable_detailed_monitoring" {
   description = "Enable CloudWatch agent for detailed CPU, memory, disk, and network metrics. Installs CloudWatch agent on instances."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "bootstrap_timeout_seconds" {

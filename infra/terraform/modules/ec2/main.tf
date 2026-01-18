@@ -103,6 +103,18 @@ resource "aws_iam_role_policy" "paraflow" {
             "cloudwatch:namespace" = "Paraflow/${var.job_id}"
           }
         }
+      },
+      # SSM - for troubleshooting access
+      {
+        Effect = "Allow"
+        Action = [
+          "ssm:UpdateInstanceInformation",
+          "ssmmessages:CreateControlChannel",
+          "ssmmessages:CreateDataChannel",
+          "ssmmessages:OpenControlChannel",
+          "ssmmessages:OpenDataChannel"
+        ]
+        Resource = "*"
       }
     ]
   })
@@ -123,16 +135,16 @@ resource "aws_iam_instance_profile" "paraflow" {
 }
 
 # ============================================================================
-# AMI Data Source
+# AMI Data Source - ECS-Optimized AL2023 (has Docker pre-installed)
 # ============================================================================
 
-data "aws_ami" "amazon_linux_2023" {
+data "aws_ami" "ecs_optimized" {
   most_recent = true
   owners      = ["amazon"]
 
   filter {
     name   = "name"
-    values = ["al2023-ami-*-kernel-*-arm64"]
+    values = ["al2023-ami-ecs-hvm-*-arm64"]
   }
 
   filter {
@@ -189,7 +201,7 @@ resource "aws_security_group" "paraflow" {
 # ============================================================================
 
 resource "aws_instance" "discoverer" {
-  ami                    = data.aws_ami.amazon_linux_2023.id
+  ami                    = data.aws_ami.ecs_optimized.id
   instance_type          = var.discoverer_instance_type
   subnet_id              = var.subnet_id
   vpc_security_group_ids = [aws_security_group.paraflow.id]
@@ -234,7 +246,7 @@ resource "aws_instance" "discoverer" {
 # ============================================================================
 
 resource "aws_instance" "worker" {
-  ami                    = data.aws_ami.amazon_linux_2023.id
+  ami                    = data.aws_ami.ecs_optimized.id
   instance_type          = var.worker_instance_type
   subnet_id              = var.subnet_id
   vpc_security_group_ids = [aws_security_group.paraflow.id]

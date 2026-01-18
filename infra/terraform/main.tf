@@ -103,5 +103,6 @@ module "ec2" {
   bootstrap_timeout_seconds  = var.bootstrap_timeout_seconds
   benchmark_mode             = var.benchmark_mode
 
-  depends_on = [module.sqs, module.job_logs]
+  # Implicit dependencies via sqs_queue_url, sqs_queue_arn, and log_group_name
+  # Terraform automatically orders creation based on these references
 }
