@@ -11,9 +11,13 @@ TERRAFORM_DIR="$SCRIPT_DIR/../terraform"
 RESULTS_DIR="${RESULTS_DIR:-/tmp/paraflow-benchmarks}"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
-# AWS Configuration - ensure region is set for all AWS CLI commands
+# AWS Configuration - ensure region and profile are set for all AWS CLI commands
 export AWS_REGION="${AWS_REGION:-us-east-1}"
 export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-$AWS_REGION}"
+# Preserve AWS_PROFILE if set (for SSO or named profiles)
+if [ -n "$AWS_PROFILE" ]; then
+    export AWS_PROFILE
+fi
 
 # Default configuration
 INSTANCE_TYPE="${INSTANCE_TYPE:-t4g.medium}"
@@ -64,6 +68,7 @@ get_instance_id() {
     local component="$1"
     # Include all states to find instances even after completion
     aws ec2 describe-instances \
+        --region "$AWS_REGION" \
         --filters "Name=tag:JobId,Values=$JOB_ID" "Name=tag:Component,Values=$component" \
         --query 'Reservations[0].Instances[0].InstanceId' \
         --output text 2>/dev/null || echo "None"
@@ -77,6 +82,7 @@ get_instance_status() {
     fi
     # Use describe-instances (not describe-instance-status) to get state for any instance
     local status=$(aws ec2 describe-instances \
+        --region "$AWS_REGION" \
         --instance-ids "$instance_id" \
         --query 'Reservations[0].Instances[0].State.Name' \
         --output text 2>/dev/null || echo "error")
@@ -124,6 +130,7 @@ fetch_cloudwatch_logs_realtime() {
 
     # Fetch recent log events
     local logs=$(aws logs get-log-events \
+        --region "$AWS_REGION" \
         --log-group-name "$log_group" \
         --log-stream-name "$log_stream" \
         --start-time "$start_time" \
@@ -166,6 +173,7 @@ fetch_benchmark_metrics() {
 
     # Fetch recent log events to find the benchmark metrics JSON
     local logs=$(aws logs get-log-events \
+        --region "$AWS_REGION" \
         --log-group-name "$log_group" \
         --log-stream-name "$log_stream" \
         --limit 100 \
@@ -298,7 +306,7 @@ wait_for_completion() {
 
         # Fetch EC2 console output as fallback (every 3rd poll, before CloudWatch logs are available)
         if [ $((poll_count % 3)) -eq 1 ] && [ "$worker_id" != "None" ] && [ "$worker_id" != "N/A" ] && [ -n "$worker_id" ]; then
-            local console_output=$(aws ec2 get-console-output --instance-id "$worker_id" --query 'Output' --output text 2>/dev/null | tail -50 || echo "")
+            local console_output=$(aws ec2 get-console-output --region "$AWS_REGION" --instance-id "$worker_id" --query 'Output' --output text 2>/dev/null | tail -50 || echo "")
             if [ -n "$console_output" ] && [ "$console_output" != "None" ]; then
                 echo "--- Worker EC2 Console (bootstrap) ---"
                 echo "$console_output" | tail -15
@@ -309,11 +317,11 @@ wait_for_completion() {
         # Check SQS queue for messages - use terraform URL if available
         local queue_url="$SQS_QUEUE_URL"
         if [ "$queue_url" = "N/A" ] || [ -z "$queue_url" ]; then
-            queue_url=$(aws sqs list-queues --queue-name-prefix "paraflow-$job_id" --query 'QueueUrls[0]' --output text 2>/dev/null || echo "")
+            queue_url=$(aws sqs list-queues --region "$AWS_REGION" --queue-name-prefix "paraflow-$job_id" --query 'QueueUrls[0]' --output text 2>/dev/null || echo "")
         fi
         if [ -n "$queue_url" ] && [ "$queue_url" != "None" ] && [ "$queue_url" != "N/A" ]; then
-            local visible=$(aws sqs get-queue-attributes --queue-url "$queue_url" --attribute-names ApproximateNumberOfMessages --query 'Attributes.ApproximateNumberOfMessages' --output text 2>/dev/null || echo "0")
-            local in_flight=$(aws sqs get-queue-attributes --queue-url "$queue_url" --attribute-names ApproximateNumberOfMessagesNotVisible --query 'Attributes.ApproximateNumberOfMessagesNotVisible' --output text 2>/dev/null || echo "0")
+            local visible=$(aws sqs get-queue-attributes --region "$AWS_REGION" --queue-url "$queue_url" --attribute-names ApproximateNumberOfMessages --query 'Attributes.ApproximateNumberOfMessages' --output text 2>/dev/null || echo "0")
+            local in_flight=$(aws sqs get-queue-attributes --region "$AWS_REGION" --queue-url "$queue_url" --attribute-names ApproximateNumberOfMessagesNotVisible --query 'Attributes.ApproximateNumberOfMessagesNotVisible' --output text 2>/dev/null || echo "0")
 
             log_info "SQS Queue: $visible visible, $in_flight in-flight"
 
@@ -360,6 +368,7 @@ collect_cloudwatch_metrics() {
 
     # Collect CPU metrics
     aws cloudwatch get-metric-statistics \
+        --region "$AWS_REGION" \
         --namespace "$namespace" \
         --metric-name "cpu_usage_user" \
         --start-time "$start_time" \
@@ -370,6 +379,7 @@ collect_cloudwatch_metrics() {
 
     # Collect memory metrics
     aws cloudwatch get-metric-statistics \
+        --region "$AWS_REGION" \
         --namespace "$namespace" \
         --metric-name "mem_used_percent" \
         --start-time "$start_time" \
@@ -380,6 +390,7 @@ collect_cloudwatch_metrics() {
 
     # Collect network metrics
     aws cloudwatch get-metric-statistics \
+        --region "$AWS_REGION" \
         --namespace "$namespace" \
         --metric-name "bytes_recv" \
         --start-time "$start_time" \
@@ -401,6 +412,7 @@ collect_logs() {
 
     # Get log streams
     aws logs describe-log-streams \
+        --region "$AWS_REGION" \
         --log-group-name "$log_group" \
         --query 'logStreams[*].logStreamName' \
         --output json > "$run_dir/log_streams.json" 2>/dev/null || echo "[]" > "$run_dir/log_streams.json"
@@ -410,6 +422,7 @@ collect_logs() {
     local start_time=$((end_time - 14400000))  # 4 hours ago
 
     aws logs filter-log-events \
+        --region "$AWS_REGION" \
         --log-group-name "$log_group" \
         --start-time "$start_time" \
         --end-time "$end_time" \
