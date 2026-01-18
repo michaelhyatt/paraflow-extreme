@@ -1,6 +1,131 @@
 # EC2 Module
 # Creates EC2 instances for Paraflow discoverer and worker with Docker
 
+# ============================================================================
+# IAM Role and Instance Profile
+# ============================================================================
+
+data "aws_caller_identity" "current" {}
+
+resource "aws_iam_role" "paraflow" {
+  name = "paraflow-${var.job_id}-ec2-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+      }
+    ]
+  })
+
+  tags = merge(
+    {
+      Name        = "paraflow-${var.job_id}-ec2-role"
+      JobId       = var.job_id
+      Environment = var.environment
+    },
+    var.tags
+  )
+}
+
+resource "aws_iam_role_policy" "paraflow" {
+  name = "paraflow-${var.job_id}-policy"
+  role = aws_iam_role.paraflow.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      # ECR - pull images
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:GetAuthorizationToken"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage"
+        ]
+        Resource = "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/*"
+      },
+      # S3 - read source data
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          "arn:aws:s3:::${var.source_bucket}",
+          "arn:aws:s3:::${var.source_bucket}/*"
+        ]
+      },
+      # SQS - send and receive messages
+      {
+        Effect = "Allow"
+        Action = [
+          "sqs:SendMessage",
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes",
+          "sqs:GetQueueUrl"
+        ]
+        Resource = var.sqs_queue_arn
+      },
+      # CloudWatch Logs - write logs
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "logs:DescribeLogStreams"
+        ]
+        Resource = "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:${var.log_group_name}:*"
+      },
+      # CloudWatch Metrics - publish custom metrics
+      {
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData"
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "cloudwatch:namespace" = "Paraflow/${var.job_id}"
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_instance_profile" "paraflow" {
+  name = "paraflow-${var.job_id}-profile"
+  role = aws_iam_role.paraflow.name
+
+  tags = merge(
+    {
+      Name        = "paraflow-${var.job_id}-profile"
+      JobId       = var.job_id
+      Environment = var.environment
+    },
+    var.tags
+  )
+}
+
+# ============================================================================
+# AMI Data Source
+# ============================================================================
+
 data "aws_ami" "amazon_linux_2023" {
   most_recent = true
   owners      = ["amazon"]
@@ -68,6 +193,7 @@ resource "aws_instance" "discoverer" {
   instance_type          = var.discoverer_instance_type
   subnet_id              = var.subnet_id
   vpc_security_group_ids = [aws_security_group.paraflow.id]
+  iam_instance_profile   = aws_iam_instance_profile.paraflow.name
   key_name               = var.key_name
 
   root_block_device {
@@ -112,6 +238,7 @@ resource "aws_instance" "worker" {
   instance_type          = var.worker_instance_type
   subnet_id              = var.subnet_id
   vpc_security_group_ids = [aws_security_group.paraflow.id]
+  iam_instance_profile   = aws_iam_instance_profile.paraflow.name
   key_name               = var.key_name
 
   root_block_device {

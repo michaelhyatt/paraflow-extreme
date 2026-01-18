@@ -11,6 +11,10 @@ TERRAFORM_DIR="$SCRIPT_DIR/../terraform"
 RESULTS_DIR="${RESULTS_DIR:-/tmp/paraflow-benchmarks}"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
+# AWS Configuration - ensure region is set for all AWS CLI commands
+export AWS_REGION="${AWS_REGION:-us-east-1}"
+export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-$AWS_REGION}"
+
 # Default configuration
 INSTANCE_TYPE="${INSTANCE_TYPE:-t4g.medium}"
 WORKER_THREADS="${WORKER_THREADS:-4}"
@@ -58,8 +62,9 @@ setup_results_dir() {
 
 get_instance_id() {
     local component="$1"
+    # Include all states to find instances even after completion
     aws ec2 describe-instances \
-        --filters "Name=tag:JobId,Values=$JOB_ID" "Name=tag:Component,Values=$component" "Name=instance-state-name,Values=running,pending" \
+        --filters "Name=tag:JobId,Values=$JOB_ID" "Name=tag:Component,Values=$component" \
         --query 'Reservations[0].Instances[0].InstanceId' \
         --output text 2>/dev/null || echo "None"
 }
@@ -70,10 +75,18 @@ get_instance_status() {
         echo "not_found"
         return
     fi
-    aws ec2 describe-instance-status \
+    # Use describe-instances (not describe-instance-status) to get state for any instance
+    local status=$(aws ec2 describe-instances \
         --instance-ids "$instance_id" \
-        --query 'InstanceStatuses[0].InstanceState.Name' \
-        --output text 2>/dev/null || echo "unknown"
+        --query 'Reservations[0].Instances[0].State.Name' \
+        --output text 2>/dev/null || echo "error")
+
+    # Handle None or empty response
+    if [ "$status" = "None" ] || [ -z "$status" ] || [ "$status" = "error" ]; then
+        echo "pending"  # Likely still initializing
+    else
+        echo "$status"
+    fi
 }
 
 fetch_bootstrap_status() {
@@ -83,14 +96,56 @@ fetch_bootstrap_status() {
         return
     fi
 
-    # Try to fetch via SSM
-    aws ssm send-command \
-        --instance-ids "$instance_id" \
-        --document-name "AWS-RunShellScript" \
-        --parameters 'commands=["cat /var/log/paraflow-bootstrap-status 2>/dev/null || echo {}"]' \
-        --output-s3-bucket-name "" \
-        --query 'Command.CommandId' \
-        --output text 2>/dev/null || echo ""
+    # Bootstrap status is now derived from CloudWatch logs or EC2 instance status
+    # SSM requires IAM role configuration which isn't set up
+    echo "{\"status\": \"monitoring_via_cloudwatch\"}"
+}
+
+# Track last log timestamp to avoid showing duplicate logs
+LAST_LOG_TIMESTAMP=0
+
+fetch_cloudwatch_logs_realtime() {
+    local job_id="$1"
+    local component="$2"
+    local instance_id="$3"
+
+    if [ -z "$instance_id" ] || [ "$instance_id" = "None" ] || [ "$instance_id" = "N/A" ]; then
+        return
+    fi
+
+    local log_group="/paraflow/jobs/$job_id"
+    local log_stream="${instance_id}/${component}/user-data"
+
+    # Get logs since last timestamp (or last 60 seconds if first time)
+    local start_time=$LAST_LOG_TIMESTAMP
+    if [ "$start_time" -eq 0 ]; then
+        start_time=$(( $(date +%s) * 1000 - 60000 ))  # 60 seconds ago in milliseconds
+    fi
+
+    # Fetch recent log events
+    local logs=$(aws logs get-log-events \
+        --log-group-name "$log_group" \
+        --log-stream-name "$log_stream" \
+        --start-time "$start_time" \
+        --limit 20 \
+        --query 'events[*].[timestamp,message]' \
+        --output text 2>/dev/null || echo "")
+
+    if [ -n "$logs" ] && [ "$logs" != "None" ]; then
+        echo "--- $component Logs (recent) ---"
+        echo "$logs" | while IFS=$'\t' read -r ts msg; do
+            if [ -n "$msg" ]; then
+                # Update last timestamp
+                if [ "$ts" -gt "$LAST_LOG_TIMESTAMP" ] 2>/dev/null; then
+                    LAST_LOG_TIMESTAMP="$ts"
+                fi
+                # Format timestamp and print
+                local formatted_ts=$(date -r $((ts / 1000)) "+%H:%M:%S" 2>/dev/null || echo "$ts")
+                echo "[$formatted_ts] $msg"
+            fi
+        done
+        echo "--- End $component Logs ---"
+    fi
 }
 
 fetch_benchmark_metrics() {
@@ -99,33 +154,71 @@ fetch_benchmark_metrics() {
 
     if [ "$instance_id" = "None" ] || [ -z "$instance_id" ]; then
         log_warn "No instance ID provided for metrics fetch"
+        echo "{}" > "$run_dir/worker_metrics.json"
         return
     fi
 
-    log_info "Fetching benchmark metrics from instance $instance_id..."
+    log_info "Fetching benchmark metrics from CloudWatch logs..."
 
-    # Use SSM to retrieve the benchmark metrics file
-    local command_id=$(aws ssm send-command \
-        --instance-ids "$instance_id" \
-        --document-name "AWS-RunShellScript" \
-        --parameters 'commands=["cat /var/log/benchmark-metrics.json 2>/dev/null || echo {}"]' \
-        --query 'Command.CommandId' \
+    # Try to fetch metrics from CloudWatch logs (worker writes benchmark-metrics.json content to logs)
+    local log_group="/paraflow/jobs/$JOB_ID"
+    local log_stream="${instance_id}/worker/user-data"
+
+    # Fetch recent log events to find the benchmark metrics JSON
+    local logs=$(aws logs get-log-events \
+        --log-group-name "$log_group" \
+        --log-stream-name "$log_stream" \
+        --limit 100 \
+        --query 'events[*].message' \
         --output text 2>/dev/null || echo "")
 
-    if [ -n "$command_id" ] && [ "$command_id" != "None" ]; then
-        # Wait for command to complete
-        sleep 5
+    if [ -n "$logs" ] && [ "$logs" != "None" ]; then
+        # Try to find the benchmark metrics JSON in the logs
+        # The worker outputs: Metrics: files=X records=Y throughput=Z rec/s W MB/s
+        local files=$(echo "$logs" | grep -oP 'files=\K\d+' | tail -1 || echo "0")
+        local records=$(echo "$logs" | grep -oP 'records=\K[\d,]+' | tail -1 | tr -d ',' || echo "0")
+        local rec_per_sec=$(echo "$logs" | grep -oP 'throughput=\K[\d,]+' | tail -1 | tr -d ',' || echo "0")
+        local mb_per_sec=$(echo "$logs" | grep -oP '[\d.]+(?= MB/s)' | tail -1 || echo "0")
 
-        # Get command output
-        aws ssm get-command-invocation \
-            --command-id "$command_id" \
-            --instance-id "$instance_id" \
-            --query 'StandardOutputContent' \
-            --output text 2>/dev/null > "$run_dir/worker_metrics.json" || echo "{}" > "$run_dir/worker_metrics.json"
+        # Also try to extract from JSON format in logs
+        if [ "$files" = "0" ]; then
+            files=$(echo "$logs" | grep -oP '"files":\s*\K\d+' | tail -1 || echo "0")
+        fi
+        if [ "$records" = "0" ]; then
+            records=$(echo "$logs" | grep -oP '"records":\s*\K\d+' | tail -1 || echo "0")
+        fi
+        if [ "$rec_per_sec" = "0" ]; then
+            rec_per_sec=$(echo "$logs" | grep -oP '"rec_per_sec":\s*\K\d+' | tail -1 || echo "0")
+        fi
+        if [ "$mb_per_sec" = "0" ]; then
+            mb_per_sec=$(echo "$logs" | grep -oP '"mb_per_sec":\s*\K[\d.]+' | tail -1 || echo "0")
+        fi
 
+        # Extract duration from "Worker Complete (Xs, exit=0)" message
+        local duration=$(echo "$logs" | grep -oP 'Worker Complete \(\K\d+' | tail -1 || echo "0")
+
+        log_info "Extracted metrics: files=$files, records=$records, $rec_per_sec rec/s, $mb_per_sec MB/s, duration=${duration}s"
+
+        # Save as JSON
+        cat > "$run_dir/worker_metrics.json" <<EOF
+{
+    "component": "worker",
+    "job_id": "$JOB_ID",
+    "instance_id": "$instance_id",
+    "throughput": {
+        "files_processed": $files,
+        "records_processed": $records,
+        "records_per_second": $rec_per_sec,
+        "mb_per_second": $mb_per_sec,
+        "files_per_second": 0
+    },
+    "duration": $duration,
+    "source": "cloudwatch_logs"
+}
+EOF
         log_success "Worker metrics saved to $run_dir/worker_metrics.json"
     else
-        log_warn "Failed to send SSM command to fetch metrics"
+        log_warn "Could not fetch logs from CloudWatch"
         echo "{}" > "$run_dir/worker_metrics.json"
     fi
 }
@@ -146,6 +239,7 @@ parse_worker_metrics() {
         WORKER_RECORDS_PER_SEC=$(jq -r '.throughput.records_per_second // 0' "$metrics_file" 2>/dev/null || echo "0")
         WORKER_MB_PER_SEC=$(jq -r '.throughput.mb_per_second // 0' "$metrics_file" 2>/dev/null || echo "0")
         WORKER_BYTES_READ=$(jq -r '.throughput.bytes_read // "0 bytes"' "$metrics_file" 2>/dev/null || echo "0 bytes")
+        WORKER_DURATION=$(jq -r '.duration // 0' "$metrics_file" 2>/dev/null || echo "0")
     else
         # Fallback to grep
         WORKER_FILES_PROCESSED=$(grep -oP '"files_processed":\s*\K\d+' "$metrics_file" 2>/dev/null | head -1 || echo "0")
@@ -154,58 +248,104 @@ parse_worker_metrics() {
         WORKER_RECORDS_PER_SEC=$(grep -oP '"records_per_second":\s*\K\d+' "$metrics_file" 2>/dev/null | head -1 || echo "0")
         WORKER_MB_PER_SEC=$(grep -oP '"mb_per_second":\s*\K[\d.]+' "$metrics_file" 2>/dev/null | head -1 || echo "0")
         WORKER_BYTES_READ=$(grep -oP '"bytes_read":\s*"\K[^"]+' "$metrics_file" 2>/dev/null | head -1 || echo "0 bytes")
+        WORKER_DURATION=$(grep -oP '"duration":\s*\K\d+' "$metrics_file" 2>/dev/null | head -1 || echo "0")
     fi
 
-    log_info "Parsed metrics: files=$WORKER_FILES_PROCESSED, records=$WORKER_RECORDS_PROCESSED, throughput=$WORKER_RECORDS_PER_SEC rec/s, $WORKER_MB_PER_SEC MB/s"
+    log_info "Parsed metrics: files=$WORKER_FILES_PROCESSED, records=$WORKER_RECORDS_PROCESSED, throughput=$WORKER_RECORDS_PER_SEC rec/s, $WORKER_MB_PER_SEC MB/s, duration=${WORKER_DURATION}s"
 }
 
 wait_for_completion() {
     local job_id="$1"
     local run_dir="$2"
     local start_time=$(date +%s)
+    local poll_count=0
 
     log_info "Waiting for job completion (polling every ${POLL_INTERVAL}s, max ${MAX_WAIT_TIME}s)..."
+    log_info "Using terraform instance IDs: discoverer=$DISCOVERER_INSTANCE_ID, worker=$WORKER_INSTANCE_ID"
+    echo ""
 
     while true; do
+        poll_count=$((poll_count + 1))
         local elapsed=$(($(date +%s) - start_time))
+
         if [ "$elapsed" -gt "$MAX_WAIT_TIME" ]; then
             log_error "Timeout waiting for job completion after ${elapsed}s"
             return 1
         fi
 
-        # Check SQS queue for messages
-        local queue_url=$(aws sqs list-queues --queue-name-prefix "paraflow-$job_id" --query 'QueueUrls[0]' --output text 2>/dev/null || echo "")
-        if [ -n "$queue_url" ] && [ "$queue_url" != "None" ]; then
+        echo "--- Poll #$poll_count (elapsed: ${elapsed}s) ---"
+
+        # Check discoverer instance - use terraform ID if available, else query by tag
+        local discoverer_id="$DISCOVERER_INSTANCE_ID"
+        if [ "$discoverer_id" = "N/A" ] || [ -z "$discoverer_id" ]; then
+            discoverer_id=$(get_instance_id "discoverer")
+        fi
+        local discoverer_status=$(get_instance_status "$discoverer_id")
+        log_info "Discoverer: ID=$discoverer_id, Status=$discoverer_status"
+
+        # Check worker instance - use terraform ID if available, else query by tag
+        local worker_id="$WORKER_INSTANCE_ID"
+        if [ "$worker_id" = "N/A" ] || [ -z "$worker_id" ]; then
+            worker_id=$(get_instance_id "worker")
+        fi
+        local worker_status=$(get_instance_status "$worker_id")
+        log_info "Worker: ID=$worker_id, Status=$worker_status"
+
+        # Fetch CloudWatch logs from both discoverer and worker (every poll)
+        log_info "Fetching CloudWatch logs..."
+        fetch_cloudwatch_logs_realtime "$job_id" "discoverer" "$discoverer_id"
+        fetch_cloudwatch_logs_realtime "$job_id" "worker" "$worker_id"
+
+        # Fetch EC2 console output as fallback (every 3rd poll, before CloudWatch logs are available)
+        if [ $((poll_count % 3)) -eq 1 ] && [ "$worker_id" != "None" ] && [ "$worker_id" != "N/A" ] && [ -n "$worker_id" ]; then
+            local console_output=$(aws ec2 get-console-output --instance-id "$worker_id" --query 'Output' --output text 2>/dev/null | tail -50 || echo "")
+            if [ -n "$console_output" ] && [ "$console_output" != "None" ]; then
+                echo "--- Worker EC2 Console (bootstrap) ---"
+                echo "$console_output" | tail -15
+                echo "--- End EC2 Console ---"
+            fi
+        fi
+
+        # Check SQS queue for messages - use terraform URL if available
+        local queue_url="$SQS_QUEUE_URL"
+        if [ "$queue_url" = "N/A" ] || [ -z "$queue_url" ]; then
+            queue_url=$(aws sqs list-queues --queue-name-prefix "paraflow-$job_id" --query 'QueueUrls[0]' --output text 2>/dev/null || echo "")
+        fi
+        if [ -n "$queue_url" ] && [ "$queue_url" != "None" ] && [ "$queue_url" != "N/A" ]; then
             local visible=$(aws sqs get-queue-attributes --queue-url "$queue_url" --attribute-names ApproximateNumberOfMessages --query 'Attributes.ApproximateNumberOfMessages' --output text 2>/dev/null || echo "0")
             local in_flight=$(aws sqs get-queue-attributes --queue-url "$queue_url" --attribute-names ApproximateNumberOfMessagesNotVisible --query 'Attributes.ApproximateNumberOfMessagesNotVisible' --output text 2>/dev/null || echo "0")
 
-            log_info "Queue status: $visible visible, $in_flight in-flight (elapsed: ${elapsed}s)"
+            log_info "SQS Queue: $visible visible, $in_flight in-flight"
 
             # Save queue metrics
-            echo "{\"timestamp\":\"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\",\"visible\":$visible,\"in_flight\":$in_flight,\"elapsed\":$elapsed}" >> "$run_dir/queue_metrics.jsonl"
+            echo "{\"timestamp\":\"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\",\"visible\":$visible,\"in_flight\":$in_flight,\"elapsed\":$elapsed,\"worker_status\":\"$worker_status\",\"discoverer_status\":\"$discoverer_status\"}" >> "$run_dir/queue_metrics.jsonl"
+        else
+            log_info "SQS Queue: Not found yet (waiting for infrastructure)"
         fi
 
-        # Check if worker instance is still running
-        local worker_id=$(get_instance_id "worker")
-        local worker_status=$(get_instance_status "$worker_id")
-
+        # Check if worker instance has terminated/stopped
         if [ "$worker_status" = "terminated" ] || [ "$worker_status" = "stopped" ]; then
+            echo ""
             log_info "Worker instance terminated/stopped - job likely complete"
             break
         fi
 
-        # If no messages and worker finished
+        # If queue is empty and worker not running after initial startup
         if [ "$visible" = "0" ] && [ "$in_flight" = "0" ] && [ "$worker_status" != "running" ] && [ "$elapsed" -gt 120 ]; then
+            echo ""
             log_success "Queue empty and worker not running - job complete"
             break
         fi
 
+        echo ""
         sleep "$POLL_INTERVAL"
     done
 
     local total_time=$(($(date +%s) - start_time))
-    log_success "Job completed in ${total_time}s"
-    echo "$total_time"
+    log_success "Job completed in ${total_time}s after $poll_count polls"
+
+    # Set global variable for caller
+    WAIT_TOTAL_TIME="$total_time"
 }
 
 collect_cloudwatch_metrics() {
@@ -382,13 +522,21 @@ EOF
 # ============================================================================
 
 deploy() {
+    echo ""
+    echo "============================================================================"
+    echo " STEP 1: INFRASTRUCTURE DEPLOYMENT"
+    echo "============================================================================"
+    echo ""
+
     log_info "Deploying infrastructure with instance type: $INSTANCE_TYPE"
+    log_info "Working directory: $TERRAFORM_DIR"
 
     cd "$TERRAFORM_DIR"
 
     # Create tfvars for this benchmark run
     local benchmark_tfvars="benchmark-${TIMESTAMP}.tfvars"
 
+    log_info "Creating benchmark tfvars file: $benchmark_tfvars"
     cat > "$benchmark_tfvars" <<EOF
 # Benchmark run: $TIMESTAMP
 worker_instance_type       = "$INSTANCE_TYPE"
@@ -400,81 +548,189 @@ benchmark_mode             = true
 bootstrap_timeout_seconds  = 900
 EOF
 
-    log_info "Created $benchmark_tfvars"
+    log_info "Benchmark configuration:"
+    log_info "  - worker_instance_type: $INSTANCE_TYPE"
+    log_info "  - worker_threads: $WORKER_THREADS"
+    log_info "  - batch_size: $BATCH_SIZE"
+    log_info "  - max_files: $MAX_FILES"
+    log_info "  - enable_detailed_monitoring: true"
+    log_info "  - benchmark_mode: true"
+
+    # Check for base tfvars
+    if [ -f "example.tfvars" ]; then
+        log_info "Using base config from example.tfvars"
+    else
+        log_warn "No example.tfvars found - using defaults only"
+    fi
 
     # Initialize if needed
     if [ ! -d ".terraform" ]; then
-        log_info "Initializing Terraform..."
+        log_info "Terraform not initialized. Running terraform init..."
         terraform init
+        log_success "Terraform initialized"
+    else
+        log_info "Terraform already initialized"
     fi
 
     # Plan and apply
-    log_info "Planning deployment..."
-    terraform plan -var-file="$benchmark_tfvars" -out="benchmark.tfplan"
+    echo ""
+    log_info "Running terraform plan..."
+    log_info "Command: terraform plan -var-file=example.tfvars -var-file=$benchmark_tfvars -out=benchmark.tfplan"
+    echo ""
+    echo "--- Terraform Plan Output ---"
+    terraform plan -var-file="example.tfvars" -var-file="$benchmark_tfvars" -out="benchmark.tfplan"
+    echo "--- End Terraform Plan ---"
+    echo ""
+    log_success "Terraform plan complete"
 
-    log_info "Applying deployment..."
-    terraform apply "benchmark.tfplan"
+    echo ""
+    log_info "Applying Terraform deployment..."
+    log_info "Command: terraform apply benchmark.tfplan"
+    log_info "Resources being created (watch for each resource completion):"
+    echo ""
+    echo "--- Terraform Apply Output ---"
+    terraform apply benchmark.tfplan
+    echo "--- End Terraform Apply ---"
+    echo ""
+    log_success "Terraform apply complete"
 
-    # Extract job_id from terraform output
+    # Extract outputs
+    echo ""
+    log_info "Extracting Terraform outputs..."
     JOB_ID=$(terraform output -raw job_id 2>/dev/null || echo "benchmark-$TIMESTAMP")
+    SQS_QUEUE_URL=$(terraform output -raw sqs_queue_url 2>/dev/null || echo "N/A")
+    DISCOVERER_INSTANCE_ID=$(terraform output -raw discoverer_instance_id 2>/dev/null || echo "N/A")
+    WORKER_INSTANCE_ID=$(terraform output -raw worker_instance_id 2>/dev/null || echo "N/A")
+    local ecr_repository=$(terraform output -raw ecr_repository_url 2>/dev/null || echo "N/A")
 
-    log_success "Infrastructure deployed. Job ID: $JOB_ID"
+    log_success "Infrastructure deployed successfully!"
+    log_info "  Job ID: $JOB_ID"
+    log_info "  SQS Queue: $SQS_QUEUE_URL"
+    log_info "  ECR Repository: $ecr_repository"
+    log_info "  Discoverer Instance: $DISCOVERER_INSTANCE_ID"
+    log_info "  Worker Instance: $WORKER_INSTANCE_ID"
 
     # Cleanup plan file
     rm -f "benchmark.tfplan"
-
-    echo "$JOB_ID"
 }
 
 monitor() {
     local job_id="$1"
     local run_dir="$2"
 
+    echo ""
+    echo "============================================================================"
+    echo " STEP 2: JOB MONITORING"
+    echo "============================================================================"
+    echo ""
+
     log_info "Monitoring job: $job_id"
+    log_info "Results directory: $run_dir"
+    log_info "Poll interval: ${POLL_INTERVAL}s"
+    log_info "Max wait time: ${MAX_WAIT_TIME}s"
 
     local start_iso=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-    local total_time=$(wait_for_completion "$job_id" "$run_dir")
+    log_info "Monitoring started at: $start_iso"
+
+    echo ""
+    log_info "Waiting for EC2 instances to start and complete processing..."
+    wait_for_completion "$job_id" "$run_dir"
+    local total_time="$WAIT_TOTAL_TIME"
     local end_iso=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
+    log_info "Monitoring completed at: $end_iso"
+    log_success "Total job execution time: ${total_time}s"
+
+    echo ""
+    echo "============================================================================"
+    echo " STEP 3: METRICS COLLECTION"
+    echo "============================================================================"
+    echo ""
+
     # Fetch worker throughput metrics before instance terminates
-    local worker_id=$(get_instance_id "worker")
+    log_info "Fetching worker instance ID..."
+    local worker_id="$WORKER_INSTANCE_ID"
+    if [ "$worker_id" = "N/A" ] || [ -z "$worker_id" ]; then
+        worker_id=$(get_instance_id "worker")
+    fi
+    log_info "Worker instance ID: $worker_id"
+
+    log_info "Fetching benchmark metrics from worker instance..."
     fetch_benchmark_metrics "$worker_id" "$run_dir"
+
+    log_info "Parsing worker metrics..."
     parse_worker_metrics "$run_dir"
 
     # Collect CloudWatch metrics
+    log_info "Collecting CloudWatch metrics..."
     collect_cloudwatch_metrics "$job_id" "$run_dir" "$start_iso" "$end_iso"
+
+    log_info "Collecting CloudWatch logs..."
     collect_logs "$job_id" "$run_dir"
 
-    echo "$total_time"
+    log_success "Metrics collection complete"
+
+    # Set global variable for caller
+    MONITOR_TOTAL_TIME="$total_time"
 }
 
 teardown() {
     local job_id="$1"
 
+    echo ""
+    echo "============================================================================"
+    echo " STEP 5: INFRASTRUCTURE TEARDOWN"
+    echo "============================================================================"
+    echo ""
+
     log_info "Tearing down infrastructure for job: $job_id"
+    log_info "Working directory: $TERRAFORM_DIR"
 
     cd "$TERRAFORM_DIR"
 
-    terraform destroy -auto-approve
+    log_info "Running terraform destroy..."
+    log_info "Command: terraform destroy -var-file=example.tfvars -auto-approve"
+    log_info "Resources being destroyed (watch for each resource removal):"
+    echo ""
+    echo "--- Terraform Destroy Output ---"
+    terraform destroy -var-file="example.tfvars" -auto-approve
+    echo "--- End Terraform Destroy ---"
+    echo ""
 
-    log_success "Infrastructure destroyed"
+    log_success "Infrastructure destroyed successfully"
 }
 
 run_benchmark() {
-    log_info "Starting benchmark run"
-    log_info "Instance Type: $INSTANCE_TYPE"
-    log_info "Worker Threads: $WORKER_THREADS"
-    log_info "Batch Size: $BATCH_SIZE"
-    log_info "Max Files: $MAX_FILES"
+    echo ""
+    echo "############################################################################"
+    echo "#                                                                          #"
+    echo "#                    PARAFLOW BENCHMARK RUNNER                             #"
+    echo "#                                                                          #"
+    echo "############################################################################"
+    echo ""
+
+    log_info "Starting benchmark run at $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    echo ""
+    log_info "BENCHMARK CONFIGURATION:"
+    log_info "  Instance Type:   $INSTANCE_TYPE"
+    log_info "  Worker Threads:  $WORKER_THREADS"
+    log_info "  Batch Size:      $BATCH_SIZE"
+    log_info "  Max Files:       $MAX_FILES"
+    log_info "  Poll Interval:   ${POLL_INTERVAL}s"
+    log_info "  Max Wait Time:   ${MAX_WAIT_TIME}s"
+    log_info "  Skip Teardown:   ${SKIP_TEARDOWN:-false}"
 
     # Setup
     local run_dir=$(setup_results_dir)
-    log_info "Results will be saved to: $run_dir"
+    echo ""
+    log_info "Results directory: $run_dir"
 
-    # Deploy
-    local job_id=$(deploy)
+    # Deploy - run in current shell to show output, capture job_id via file
+    deploy
+    local job_id="$JOB_ID"
 
     # Save configuration
+    log_info "Saving benchmark configuration to $run_dir/config.json"
     cat > "$run_dir/config.json" <<EOF
 {
     "instance_type": "$INSTANCE_TYPE",
@@ -482,28 +738,59 @@ run_benchmark() {
     "batch_size": $BATCH_SIZE,
     "max_files": $MAX_FILES,
     "job_id": "$job_id",
-    "timestamp": "$TIMESTAMP"
+    "timestamp": "$TIMESTAMP",
+    "poll_interval": $POLL_INTERVAL,
+    "max_wait_time": $MAX_WAIT_TIME
 }
 EOF
 
-    # Monitor
-    local total_time=$(monitor "$job_id" "$run_dir")
+    # Monitor - run in current shell to show output
+    monitor "$job_id" "$run_dir"
+    local total_time="$MONITOR_TOTAL_TIME"
 
     # Generate report
+    echo ""
+    echo "============================================================================"
+    echo " STEP 4: REPORT GENERATION"
+    echo "============================================================================"
+    echo ""
+
     generate_report "$run_dir" "$job_id" "$INSTANCE_TYPE" "$total_time"
 
     # Output summary CSV line for orchestrator (to stdout)
+    echo ""
+    log_info "BENCHMARK SUMMARY:"
+    log_info "  Instance Type:      $INSTANCE_TYPE"
+    log_info "  Total Duration:     ${total_time}s"
+    log_info "  Files Processed:    ${WORKER_FILES_PROCESSED:-0}"
+    log_info "  Records Processed:  ${WORKER_RECORDS_PROCESSED:-0}"
+    log_info "  Files/sec:          ${WORKER_FILES_PER_SEC:-0}"
+    log_info "  Records/sec:        ${WORKER_RECORDS_PER_SEC:-0}"
+    log_info "  Throughput:         ${WORKER_MB_PER_SEC:-0} MB/s"
+
     # Format: instance_type,duration,files_processed,records_processed,files_per_sec,records_per_sec,mb_per_sec
+    echo ""
     echo "BENCHMARK_RESULT:$INSTANCE_TYPE,$total_time,${WORKER_FILES_PROCESSED:-0},${WORKER_RECORDS_PROCESSED:-0},${WORKER_FILES_PER_SEC:-0},${WORKER_RECORDS_PER_SEC:-0},${WORKER_MB_PER_SEC:-0}"
 
     # Teardown (optional - can skip with --no-teardown)
     if [ "$SKIP_TEARDOWN" != "true" ]; then
         teardown "$job_id"
     else
+        echo ""
         log_warn "Skipping teardown (--no-teardown specified)"
+        log_warn "Remember to manually run: $0 teardown --job-id $job_id"
     fi
 
-    log_success "Benchmark complete! Results in: $run_dir"
+    echo ""
+    echo "############################################################################"
+    echo "#                                                                          #"
+    echo "#                    BENCHMARK COMPLETE                                    #"
+    echo "#                                                                          #"
+    echo "############################################################################"
+    echo ""
+
+    log_success "Benchmark complete! Results saved to: $run_dir"
+    log_info "View report: cat $run_dir/report.md"
 }
 
 # ============================================================================

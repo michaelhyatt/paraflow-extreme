@@ -97,6 +97,11 @@ variable "sqs_queue_url" {
   type        = string
 }
 
+variable "sqs_queue_arn" {
+  description = "ARN of the SQS work queue (for IAM permissions)"
+  type        = string
+}
+
 # Worker Configuration
 variable "worker_threads" {
   description = "Number of processing threads for worker"

@@ -89,6 +89,7 @@ module "ec2" {
 
   # SQS
   sqs_queue_url = module.sqs.queue_url
+  sqs_queue_arn = module.sqs.queue_arn
 
   # Worker configuration
   worker_threads = var.worker_threads

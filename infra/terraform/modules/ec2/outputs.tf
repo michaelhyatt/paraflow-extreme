@@ -32,3 +32,13 @@ output "security_group_id" {
   description = "ID of the security group"
   value       = aws_security_group.paraflow.id
 }
+
+output "iam_role_arn" {
+  description = "ARN of the IAM role for EC2 instances"
+  value       = aws_iam_role.paraflow.arn
+}
+
+output "iam_instance_profile_name" {
+  description = "Name of the IAM instance profile"
+  value       = aws_iam_instance_profile.paraflow.name
+}
