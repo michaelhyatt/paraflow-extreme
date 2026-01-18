@@ -96,7 +96,7 @@ if [ -z "$MAX_FILES" ]; then
 fi
 MAX_FILES="${MAX_FILES:-100}"
 POLL_INTERVAL="${POLL_INTERVAL:-10}"  # seconds
-MAX_WAIT_TIME="${MAX_WAIT_TIME:-300}"  # 5 minutes max
+MAX_WAIT_TIME="${MAX_WAIT_TIME:-1800}"  # 30 minutes max (sufficient for 20k files)
 
 # Colors
 RED='\033[0;31m'
@@ -310,8 +310,11 @@ fetch_benchmark_metrics() {
         # Calculate derived metrics
         local files_per_sec=0
         local bytes_read="0 bytes"
-        if [ "$duration" -gt 0 ] && [ "$files" -gt 0 ]; then
-            files_per_sec=$(echo "scale=2; $files / $duration" | bc 2>/dev/null || echo "0")
+        # Ensure numeric values for comparison (default to 0 if empty/invalid)
+        local files_num=${files:-0}
+        local duration_num=${duration:-0}
+        if [ "$duration_num" -gt 0 ] 2>/dev/null && [ "$files_num" -gt 0 ] 2>/dev/null; then
+            files_per_sec=$(echo "scale=2; $files_num / $duration_num" | bc 2>/dev/null || echo "0")
         fi
         if [ "$duration" -gt 0 ] && [ "$mb_per_sec" != "0" ]; then
             # Estimate total bytes read: MB/s * duration * 1024 * 1024
@@ -326,7 +329,7 @@ fetch_benchmark_metrics() {
             fi
         fi
 
-        log_info "Extracted metrics: files=$files, records=$records, $rec_per_sec rec/s, $mb_per_sec MB/s, duration=${duration}s"
+        log_info "Extracted metrics: files=$files, records=$records, $rec_per_sec rec/s, $mb_per_sec MB/s, duration=${duration}s, files_per_sec=$files_per_sec"
 
         # Save as JSON
         cat > "$run_dir/worker_metrics.json" <<EOF
@@ -706,7 +709,7 @@ generate_report() {
 | Parameter | Value |
 |-----------|-------|
 | Instance Type | $instance_type |
-| Worker Threads | $WORKER_THREADS |
+| Worker Threads | $([ "$WORKER_THREADS" = "0" ] && echo "auto (nproc)" || echo "$WORKER_THREADS") |
 | Batch Size | $BATCH_SIZE |
 | Max Files | $MAX_FILES |
 | Job ID | $job_id |
@@ -1026,7 +1029,7 @@ run_benchmark() {
     echo ""
     log_info "BENCHMARK CONFIGURATION:"
     log_info "  Instance Type:   $INSTANCE_TYPE"
-    log_info "  Worker Threads:  $WORKER_THREADS"
+    log_info "  Worker Threads:  $([ "$WORKER_THREADS" = "0" ] && echo "auto (nproc)" || echo "$WORKER_THREADS")"
     log_info "  Batch Size:      $BATCH_SIZE"
     log_info "  Max Files:       $MAX_FILES"
     log_info "  Poll Interval:   ${POLL_INTERVAL}s"
