@@ -63,11 +63,11 @@ benchmark_mode = false
 
 # Enable profiling artifact collection and S3 upload
 # Captures tokio runtime metrics (JSONL) and optional CPU flamegraphs (SVG)
-enable_profiling = false
+enable_profiling = true
 
 # S3 bucket for profiling artifacts (required if enable_profiling=true)
 # Artifacts are uploaded to s3://{bucket}/profiling/{job_id}/
-artifacts_bucket = ""  # e.g., "my-paraflow-artifacts"
+artifacts_bucket = "mh-paraflow-terraform-state"
 
 # ============================================================================
 # Recommended Instance Types for Different Workloads
