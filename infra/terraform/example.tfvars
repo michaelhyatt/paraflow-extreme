@@ -1,6 +1,9 @@
 # Example Terraform variables for Paraflow deployment
 # Based on NOAA GHCN dataset processing
 
+# Prepopulate queue before starting workers
+prepopulate_queue = true
+
 # Job Configuration
 job_id      = "noaa-ghcn-job"
 environment = "dev"
