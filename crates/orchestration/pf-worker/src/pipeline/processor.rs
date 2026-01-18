@@ -8,9 +8,9 @@ use pf_accumulator::BatchAccumulator;
 use pf_error::{ErrorCategory, PfError, ProcessingStage, classify_error};
 use pf_traits::{BatchIndexer, BatchStream, QueueMessage, StreamingReader};
 use pf_types::WorkItem;
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::Mutex;
 use tracing::{debug, error, info, trace, warn};
 
 /// Processing result for a single file.
@@ -113,8 +113,8 @@ pub struct Pipeline {
     global_stats: Arc<WorkerStats>,
 
     /// Batch accumulator for optimal indexer batch sizing.
-    /// Uses Mutex for thread-safe interior mutability.
-    accumulator: Mutex<BatchAccumulator>,
+    /// Uses RefCell since each Pipeline is owned by a single thread.
+    accumulator: RefCell<BatchAccumulator>,
 }
 
 impl Pipeline {
@@ -155,7 +155,7 @@ impl Pipeline {
             destination,
             stats: Arc::new(ThreadStats::new(thread_id)),
             global_stats,
-            accumulator: Mutex::new(accumulator),
+            accumulator: RefCell::new(accumulator),
         }
     }
 
@@ -331,7 +331,7 @@ impl Pipeline {
                     );
 
                     // Add batch to accumulator - flush if threshold exceeded
-                    let accumulator_result = self.accumulator.lock().await.add(record_batch);
+                    let accumulator_result = self.accumulator.borrow_mut().add(record_batch);
 
                     if let Some(batches_to_flush) = accumulator_result.batches_to_flush {
                         trace!(
@@ -386,7 +386,7 @@ impl Pipeline {
         }
 
         // Flush remaining accumulated batches at end of file
-        let remaining = self.accumulator.lock().await.flush();
+        let remaining = self.accumulator.borrow_mut().flush();
         if !remaining.is_empty() {
             trace!(
                 thread = self.thread_id,
