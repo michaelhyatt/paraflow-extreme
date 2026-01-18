@@ -173,10 +173,10 @@ collect_profiling_artifacts() {
         uname -a
     } > $ARTIFACTS_DIR/system-info.txt
 
-    # Create tarball with timestamp
-    TIMESTAMP=$(date +%s)
+    # Create tarball with human-readable datetime
+    DATETIME=$(date +%Y%m%d-%H%M%S)
     INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
-    TARBALL="/tmp/profiling-$${JOB_ID}-$${INSTANCE_ID}-$${TIMESTAMP}.tar.gz"
+    TARBALL="/tmp/profiling-$${JOB_ID}-$${DATETIME}-$${INSTANCE_ID}.tar.gz"
 
     tar -czf $TARBALL -C $ARTIFACTS_DIR .
 
