@@ -142,7 +142,7 @@ fn create_s3_client_options() -> ClientOptions {
         // HTTP/2 keep-alive to maintain persistent connections
         .with_http2_keep_alive_interval(Duration::from_secs(30))
         .with_http2_keep_alive_timeout(Duration::from_secs(20))
-        .with_http2_keep_alive_while_idle(true)
+        .with_http2_keep_alive_while_idle()
 }
 
 /// Streaming NDJSON file reader.
