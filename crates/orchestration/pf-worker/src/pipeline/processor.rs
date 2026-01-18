@@ -4,13 +4,13 @@ use super::ThreadStats;
 use crate::config::DEFAULT_ACCUMULATOR_THRESHOLD_BYTES;
 use crate::stats::WorkerStats;
 use futures::StreamExt;
+use parking_lot::Mutex;
 use pf_accumulator::BatchAccumulator;
 use pf_error::{ErrorCategory, PfError, ProcessingStage, classify_error};
 use pf_traits::{BatchIndexer, BatchStream, QueueMessage, StreamingReader};
 use pf_types::WorkItem;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::Mutex;
 use tracing::{debug, error, info, trace, warn};
 
 /// Processing result for a single file.
@@ -113,7 +113,8 @@ pub struct Pipeline {
     global_stats: Arc<WorkerStats>,
 
     /// Batch accumulator for optimal indexer batch sizing.
-    /// Uses Mutex for thread-safe interior mutability.
+    /// Uses parking_lot::Mutex for efficient synchronous locking.
+    /// parking_lot is faster than tokio::sync::Mutex for short critical sections.
     accumulator: Mutex<BatchAccumulator>,
 }
 
@@ -331,7 +332,7 @@ impl Pipeline {
                     );
 
                     // Add batch to accumulator - flush if threshold exceeded
-                    let accumulator_result = self.accumulator.lock().await.add(record_batch);
+                    let accumulator_result = self.accumulator.lock().add(record_batch);
 
                     if let Some(batches_to_flush) = accumulator_result.batches_to_flush {
                         trace!(
@@ -386,7 +387,7 @@ impl Pipeline {
         }
 
         // Flush remaining accumulated batches at end of file
-        let remaining = self.accumulator.lock().await.flush();
+        let remaining = self.accumulator.lock().flush();
         if !remaining.is_empty() {
             trace!(
                 thread = self.thread_id,
