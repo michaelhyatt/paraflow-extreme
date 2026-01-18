@@ -8,6 +8,8 @@ AWS_REGION="${aws_region}"
 LOG_GROUP="${log_group_name}"
 ENABLE_MONITORING="${enable_detailed_monitoring}"
 BENCHMARK_MODE="${benchmark_mode}"
+ENABLE_PROFILING="${enable_profiling}"
+ARTIFACTS_BUCKET="${artifacts_bucket}"
 START_TIME=$(date +%s)
 
 exec > >(tee -a /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1
@@ -77,16 +79,128 @@ if [ $WAITED -ge $MAX_WAIT ]; then
     echo "Proceeding anyway - discoverer may have failed or no files matched"
 fi
 
+# Function to collect and upload profiling artifacts
+collect_profiling_artifacts() {
+    echo "Collecting profiling artifacts..."
+
+    ARTIFACTS_DIR="/var/log/profiling-artifacts"
+    mkdir -p $ARTIFACTS_DIR
+
+    # Copy profiling files from container volume mount
+    cp /var/log/tokio-metrics.jsonl $ARTIFACTS_DIR/ 2>/dev/null || true
+    cp /var/log/profile_*.svg $ARTIFACTS_DIR/ 2>/dev/null || true
+    cp /var/log/benchmark-metrics.json $ARTIFACTS_DIR/ 2>/dev/null || true
+    cp /var/log/worker_metrics.json $ARTIFACTS_DIR/ 2>/dev/null || true
+
+    # Capture final docker stats
+    docker stats --no-stream --format "{{json .}}" > $ARTIFACTS_DIR/docker-stats.json 2>/dev/null || true
+
+    #---------------------------------------------------------------------------
+    # TROUBLESHOOTING DATA CAPTURE
+    #---------------------------------------------------------------------------
+
+    # Container logs (stdout/stderr from pf-worker)
+    echo "Collecting container logs..."
+    docker logs pf-worker > $ARTIFACTS_DIR/container-stdout.log 2> $ARTIFACTS_DIR/container-stderr.log || true
+
+    # Docker inspect for container metadata and state
+    docker inspect pf-worker > $ARTIFACTS_DIR/container-inspect.json 2>/dev/null || true
+
+    # OS-level logs
+    echo "Collecting OS logs..."
+    mkdir -p $ARTIFACTS_DIR/os-logs
+
+    # System journal (recent entries)
+    journalctl --since "1 hour ago" --no-pager > $ARTIFACTS_DIR/os-logs/journal-1h.log 2>/dev/null || true
+
+    # Docker daemon logs
+    journalctl -u docker --since "1 hour ago" --no-pager > $ARTIFACTS_DIR/os-logs/docker-daemon.log 2>/dev/null || true
+
+    # Kernel messages (dmesg) - useful for OOM kills, hardware issues
+    dmesg -T > $ARTIFACTS_DIR/os-logs/dmesg.log 2>/dev/null || true
+
+    # Cloud-init logs (EC2 user-data execution)
+    cp /var/log/cloud-init.log $ARTIFACTS_DIR/os-logs/ 2>/dev/null || true
+    cp /var/log/cloud-init-output.log $ARTIFACTS_DIR/os-logs/ 2>/dev/null || true
+
+    # Key system logs
+    echo "Collecting key system logs..."
+    cp /var/log/messages $ARTIFACTS_DIR/os-logs/ 2>/dev/null || true
+    cp /var/log/secure $ARTIFACTS_DIR/os-logs/ 2>/dev/null || true
+
+    # ECS agent logs (if using ECS)
+    cp -r /var/log/ecs $ARTIFACTS_DIR/os-logs/ 2>/dev/null || true
+
+    # Process state at collection time
+    echo "Collecting process state..."
+    ps auxf > $ARTIFACTS_DIR/process-tree.txt 2>/dev/null || true
+    top -bn1 > $ARTIFACTS_DIR/top-snapshot.txt 2>/dev/null || true
+
+    # Network state
+    ss -tuanp > $ARTIFACTS_DIR/network-connections.txt 2>/dev/null || true
+
+    # Memory details
+    cat /proc/meminfo > $ARTIFACTS_DIR/meminfo.txt 2>/dev/null || true
+    cat /proc/vmstat > $ARTIFACTS_DIR/vmstat.txt 2>/dev/null || true
+
+    # I/O statistics
+    iostat -x 1 3 > $ARTIFACTS_DIR/iostat.txt 2>/dev/null || true
+
+    #---------------------------------------------------------------------------
+    # END TROUBLESHOOTING DATA CAPTURE
+    #---------------------------------------------------------------------------
+
+    # System information
+    {
+        echo "=== Instance Info ==="
+        echo "Instance ID: $(curl -s http://169.254.169.254/latest/meta-data/instance-id)"
+        echo "Instance Type: $(curl -s http://169.254.169.254/latest/meta-data/instance-type)"
+        echo "Availability Zone: $(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone)"
+        echo ""
+        echo "=== CPU Info ==="
+        lscpu | grep -E "^(Architecture|CPU\(s\)|Model name|CPU max MHz)"
+        echo ""
+        echo "=== Memory Info ==="
+        free -h
+        echo ""
+        echo "=== Disk Info ==="
+        df -h /
+        echo ""
+        echo "=== Uptime ==="
+        uptime
+        echo ""
+        echo "=== Kernel Version ==="
+        uname -a
+    } > $ARTIFACTS_DIR/system-info.txt
+
+    # Create tarball with timestamp
+    TIMESTAMP=$(date +%s)
+    INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+    TARBALL="/tmp/profiling-$${JOB_ID}-$${INSTANCE_ID}-$${TIMESTAMP}.tar.gz"
+
+    tar -czf $TARBALL -C $ARTIFACTS_DIR .
+
+    # Upload to S3
+    aws s3 cp $TARBALL s3://$${ARTIFACTS_BUCKET}/profiling/$${JOB_ID}/ --region $AWS_REGION
+
+    echo "Profiling artifacts uploaded to s3://$${ARTIFACTS_BUCKET}/profiling/$${JOB_ID}/"
+}
+
 # Run worker
 echo "Starting pf-worker..."
 WORKER_LOG="/var/log/pf-worker-output.log"
 CONTAINER_START=$(date +%s)
 
-docker run --rm --name pf-worker -e AWS_REGION=$AWS_REGION \
-  ${ecr_repository}:${image_tag} \
-  --input sqs --sqs-queue-url ${sqs_queue_url} --destination stats \
-  --threads $WORKER_THREADS --batch-size ${batch_size} \
-  --sqs-drain --region $AWS_REGION --progress --log-level info 2>&1 | tee "$WORKER_LOG"
+# Build docker run command with optional profiling flags
+DOCKER_ARGS="--rm --name pf-worker -e AWS_REGION=$AWS_REGION"
+WORKER_ARGS="--input sqs --sqs-queue-url ${sqs_queue_url} --destination stats --threads $WORKER_THREADS --batch-size ${batch_size} --sqs-drain --region $AWS_REGION --progress --log-level info"
+
+if [ "$ENABLE_PROFILING" = "true" ]; then
+    DOCKER_ARGS="$DOCKER_ARGS -v /var/log:/var/log"
+    WORKER_ARGS="$WORKER_ARGS --metrics-file /var/log/tokio-metrics.jsonl --profile-dir /var/log --profile-interval 60"
+fi
+
+docker run $DOCKER_ARGS ${ecr_repository}:${image_tag} $WORKER_ARGS 2>&1 | tee "$WORKER_LOG"
 
 EXIT_CODE=$${PIPESTATUS[0]}
 DURATION=$(($(date +%s) - CONTAINER_START))
@@ -104,6 +218,11 @@ if [ "$BENCHMARK_MODE" = "true" ]; then
     cat > /var/log/benchmark-metrics.json <<EOF
 {"component":"$COMPONENT","job_id":"$JOB_ID","instance_type":"$(curl -s http://169.254.169.254/latest/meta-data/instance-type)","duration":$DURATION,"status":"$([ $EXIT_CODE -eq 0 ] && echo SUCCESS || echo FAILED)","throughput":{"files":$FILES,"records":$RECORDS,"rec_per_sec":$REC_SEC,"mb_per_sec":$MB_SEC}}
 EOF
+fi
+
+# Collect and upload profiling artifacts before instance terminates
+if [ "$ENABLE_PROFILING" = "true" ] && [ -n "$ARTIFACTS_BUCKET" ]; then
+    collect_profiling_artifacts
 fi
 
 echo "=== Worker Complete ($${DURATION}s, exit=$EXIT_CODE) ==="

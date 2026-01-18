@@ -16,7 +16,8 @@ COPY crates/ crates/
 COPY cli/ cli/
 COPY tests/ tests/
 
-# Build release binaries
+# Build release binaries with tokio_unstable for full runtime metrics
+ENV RUSTFLAGS="--cfg tokio_unstable"
 RUN cargo build --release -p pf-discoverer-cli -p pf-worker-cli
 
 # Stage 2: Discoverer target

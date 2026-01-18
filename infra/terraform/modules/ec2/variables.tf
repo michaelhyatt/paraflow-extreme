@@ -166,3 +166,19 @@ variable "benchmark_mode" {
   type        = bool
   default     = false
 }
+
+# ============================================================================
+# Profiling Configuration
+# ============================================================================
+
+variable "enable_profiling" {
+  description = "Enable profiling artifact collection and S3 upload"
+  type        = bool
+  default     = false
+}
+
+variable "artifacts_bucket" {
+  description = "S3 bucket for profiling artifacts upload (required if enable_profiling=true)"
+  type        = string
+  default     = ""
+}
