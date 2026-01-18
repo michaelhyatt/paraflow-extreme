@@ -77,15 +77,19 @@ resource "aws_instance" "discoverer" {
   }
 
   user_data = base64encode(templatefile("${path.module}/user_data_discoverer.sh.tpl", {
-    aws_region     = var.aws_region
-    ecr_repository = var.ecr_repository
-    image_tag      = var.image_tag
-    source_bucket  = var.source_bucket
-    source_prefix  = var.source_prefix
-    sqs_queue_url  = var.sqs_queue_url
-    file_pattern   = var.file_pattern
-    max_files      = var.max_files
-    log_group_name = var.log_group_name
+    aws_region                  = var.aws_region
+    ecr_repository              = var.ecr_repository
+    image_tag                   = var.image_tag
+    source_bucket               = var.source_bucket
+    source_prefix               = var.source_prefix
+    sqs_queue_url               = var.sqs_queue_url
+    file_pattern                = var.file_pattern
+    max_files                   = var.max_files
+    log_group_name              = var.log_group_name
+    job_id                      = var.job_id
+    enable_detailed_monitoring  = var.enable_detailed_monitoring
+    bootstrap_timeout_seconds   = var.bootstrap_timeout_seconds
+    benchmark_mode              = var.benchmark_mode
   }))
 
   tags = merge(
@@ -117,13 +121,17 @@ resource "aws_instance" "worker" {
   }
 
   user_data = base64encode(templatefile("${path.module}/user_data_worker.sh.tpl", {
-    aws_region     = var.aws_region
-    ecr_repository = var.ecr_repository
-    image_tag      = var.image_tag
-    sqs_queue_url  = var.sqs_queue_url
-    worker_threads = var.worker_threads
-    batch_size     = var.batch_size
-    log_group_name = var.log_group_name
+    aws_region                  = var.aws_region
+    ecr_repository              = var.ecr_repository
+    image_tag                   = var.image_tag
+    sqs_queue_url               = var.sqs_queue_url
+    worker_threads              = var.worker_threads
+    batch_size                  = var.batch_size
+    log_group_name              = var.log_group_name
+    job_id                      = var.job_id
+    enable_detailed_monitoring  = var.enable_detailed_monitoring
+    bootstrap_timeout_seconds   = var.bootstrap_timeout_seconds
+    benchmark_mode              = var.benchmark_mode
   }))
 
   tags = merge(

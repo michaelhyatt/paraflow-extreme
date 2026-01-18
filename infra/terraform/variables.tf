@@ -159,3 +159,25 @@ variable "log_retention_days" {
   type        = number
   default     = 30
 }
+
+# ============================================================================
+# Monitoring and Benchmark Configuration
+# ============================================================================
+
+variable "enable_detailed_monitoring" {
+  description = "Enable CloudWatch agent for detailed CPU, memory, disk, and network metrics. Installs CloudWatch agent on instances."
+  type        = bool
+  default     = false
+}
+
+variable "bootstrap_timeout_seconds" {
+  description = "Maximum time allowed for EC2 instance bootstrap before timeout. Increase for larger instances or slower networks."
+  type        = number
+  default     = 600 # 10 minutes
+}
+
+variable "benchmark_mode" {
+  description = "Enable benchmark mode for collecting performance metrics. Records timing and throughput data to /var/log/benchmark-metrics.json"
+  type        = bool
+  default     = false
+}

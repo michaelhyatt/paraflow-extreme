@@ -121,3 +121,25 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+# ============================================================================
+# Monitoring and Benchmark Configuration
+# ============================================================================
+
+variable "enable_detailed_monitoring" {
+  description = "Enable CloudWatch agent for detailed CPU, memory, disk, and network metrics"
+  type        = bool
+  default     = false
+}
+
+variable "bootstrap_timeout_seconds" {
+  description = "Maximum time allowed for EC2 instance bootstrap before timeout"
+  type        = number
+  default     = 600 # 10 minutes
+}
+
+variable "benchmark_mode" {
+  description = "Enable benchmark mode for collecting performance metrics"
+  type        = bool
+  default     = false
+}

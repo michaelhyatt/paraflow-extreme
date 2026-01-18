@@ -41,3 +41,17 @@ tarpaulin-report.html
 # Local development
 docker-compose.override.yml
 localstack/
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.template
+*.tfplan
+.terraform.lock.hcl
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
