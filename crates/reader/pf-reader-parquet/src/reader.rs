@@ -180,7 +180,10 @@ impl ParquetReader {
             Arc::new(LocalFileSystem::new())
         } else {
             // cache_key is the bucket name for S3
-            debug!(bucket = cache_key, "Creating new S3 object store with connection pooling");
+            debug!(
+                bucket = cache_key,
+                "Creating new S3 object store with connection pooling"
+            );
             let mut builder = AmazonS3Builder::new()
                 .with_bucket_name(cache_key)
                 .with_region(&self.config.region)
