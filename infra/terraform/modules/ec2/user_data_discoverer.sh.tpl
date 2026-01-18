@@ -1,5 +1,5 @@
 #!/bin/bash
-set -ex
+set -e
 
 # Paraflow Discoverer Bootstrap Script
 COMPONENT="discoverer"
@@ -47,6 +47,12 @@ docker run --rm --name pf-discoverer -e AWS_REGION=$AWS_REGION \
   --pattern "${file_pattern}" \
 %{ if max_files > 0 ~}
   --max-files ${max_files} \
+%{ endif ~}
+%{ if partitioning != "" ~}
+  --partitioning "${partitioning}" \
+%{ endif ~}
+%{ if filter != "" ~}
+  --filter "${filter}" \
 %{ endif ~}
   --region $AWS_REGION --progress --log-level info
 

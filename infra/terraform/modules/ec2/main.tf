@@ -223,6 +223,8 @@ resource "aws_instance" "discoverer" {
     sqs_queue_url               = var.sqs_queue_url
     file_pattern                = var.file_pattern
     max_files                   = var.max_files
+    partitioning                = var.partitioning
+    filter                      = var.filter
     log_group_name              = var.log_group_name
     job_id                      = var.job_id
     enable_detailed_monitoring  = var.enable_detailed_monitoring

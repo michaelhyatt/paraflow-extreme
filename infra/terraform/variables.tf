@@ -106,6 +106,18 @@ variable "max_files" {
   default     = 0
 }
 
+variable "partitioning" {
+  description = "Partitioning pattern for date-based file discovery (e.g., 'parquet/by_year/YEAR=$${_time:%Y}/')"
+  type        = string
+  default     = ""
+}
+
+variable "filter" {
+  description = "Time-based filter for partitioned data (e.g., '_time=2012-01-01..2026-01-05')"
+  type        = string
+  default     = ""
+}
+
 # ============================================================================
 # SQS Configuration
 # ============================================================================
@@ -139,9 +151,9 @@ variable "sqs_max_receive_count" {
 # ============================================================================
 
 variable "worker_threads" {
-  description = "Number of processing threads for worker"
+  description = "Number of processing threads for worker (0 = auto-detect from CPU cores)"
   type        = number
-  default     = 2
+  default     = 0
 }
 
 variable "batch_size" {

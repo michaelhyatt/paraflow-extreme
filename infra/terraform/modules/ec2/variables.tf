@@ -91,6 +91,18 @@ variable "max_files" {
   default     = 0
 }
 
+variable "partitioning" {
+  description = "Partitioning pattern for date-based file discovery"
+  type        = string
+  default     = ""
+}
+
+variable "filter" {
+  description = "Time-based filter for partitioned data"
+  type        = string
+  default     = ""
+}
+
 # SQS Configuration
 variable "sqs_queue_url" {
   description = "URL of the SQS work queue"
@@ -104,9 +116,9 @@ variable "sqs_queue_arn" {
 
 # Worker Configuration
 variable "worker_threads" {
-  description = "Number of processing threads for worker"
+  description = "Number of processing threads for worker (0 = auto-detect from CPU cores)"
   type        = number
-  default     = 2
+  default     = 0
 }
 
 variable "batch_size" {

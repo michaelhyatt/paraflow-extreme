@@ -14,18 +14,85 @@ TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 # AWS Configuration - ensure region and profile are set for all AWS CLI commands
 export AWS_REGION="${AWS_REGION:-us-east-1}"
 export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-$AWS_REGION}"
+export AWS_PAGER=""  # Disable pager to prevent hangs
+
 # Preserve AWS_PROFILE if set (for SSO or named profiles)
+# AWS CLI automatically uses AWS_PROFILE when exported - no need for --profile flag
 if [ -n "$AWS_PROFILE" ]; then
     export AWS_PROFILE
+    echo "Using AWS profile: $AWS_PROFILE"
+else
+    echo "WARNING: AWS_PROFILE is not set. AWS CLI commands may fail."
+    echo "Set it with: export AWS_PROFILE=your-profile-name"
 fi
+
+# Verify AWS credentials are working for AWS CLI (not just terraform)
+# This is critical - terraform may use different credential sources than AWS CLI
+AWS_IDENTITY=$(aws sts get-caller-identity --no-cli-pager --output json 2>&1)
+AWS_EXIT_CODE=$?
+
+if [ $AWS_EXIT_CODE -ne 0 ]; then
+    echo ""
+    echo "=========================================="
+    echo "ERROR: AWS CLI credentials not configured!"
+    echo "=========================================="
+    echo ""
+    echo "Error: $AWS_IDENTITY"
+    echo ""
+    echo "Please set AWS_PROFILE before running this script:"
+    echo ""
+    echo "  export AWS_PROFILE=your-profile-name"
+    echo "  ./benchmark-runner.sh run"
+    echo ""
+    echo "Or run with the profile inline:"
+    echo ""
+    echo "  AWS_PROFILE=your-profile-name ./benchmark-runner.sh run"
+    echo ""
+    echo "Note: Terraform may use different credentials than AWS CLI."
+    echo "      Make sure AWS_PROFILE is exported in your shell."
+    echo ""
+    exit 1
+fi
+
+# Parse credentials - try jq first, fall back to grep
+if command -v jq &> /dev/null; then
+    AWS_ACCOUNT=$(echo "$AWS_IDENTITY" | jq -r '.Account // "unknown"' 2>/dev/null)
+    AWS_ARN=$(echo "$AWS_IDENTITY" | jq -r '.Arn // "unknown"' 2>/dev/null)
+else
+    # Fallback to grep - handle both macOS and Linux
+    AWS_ACCOUNT=$(echo "$AWS_IDENTITY" | grep -o '"Account"[^,}]*' | sed 's/.*: *"\([^"]*\)".*/\1/' 2>/dev/null || echo "unknown")
+    AWS_ARN=$(echo "$AWS_IDENTITY" | grep -o '"Arn"[^,}]*' | sed 's/.*: *"\([^"]*\)".*/\1/' 2>/dev/null || echo "unknown")
+fi
+
+# Verify we actually got valid credentials
+if [ "$AWS_ACCOUNT" = "unknown" ] || [ -z "$AWS_ACCOUNT" ] || [ "$AWS_ACCOUNT" = "null" ]; then
+    echo ""
+    echo "=========================================="
+    echo "ERROR: Failed to parse AWS credentials!"
+    echo "=========================================="
+    echo ""
+    echo "AWS CLI returned:"
+    echo "$AWS_IDENTITY"
+    echo ""
+    echo "Please ensure AWS_PROFILE is set correctly:"
+    echo ""
+    echo "  export AWS_PROFILE=your-profile-name"
+    echo "  ./benchmark-runner.sh run"
+    echo ""
+    exit 1
+fi
+
+echo "AWS CLI credentials verified:"
+echo "  Account: $AWS_ACCOUNT"
+echo "  Identity: $AWS_ARN"
 
 # Default configuration
 INSTANCE_TYPE="${INSTANCE_TYPE:-t4g.medium}"
-WORKER_THREADS="${WORKER_THREADS:-4}"
+WORKER_THREADS="${WORKER_THREADS:-0}"  # 0 = auto-detect from CPU cores
 BATCH_SIZE="${BATCH_SIZE:-10000}"
 MAX_FILES="${MAX_FILES:-100}"
-POLL_INTERVAL="${POLL_INTERVAL:-30}"  # seconds
-MAX_WAIT_TIME="${MAX_WAIT_TIME:-3600}"  # 1 hour max
+POLL_INTERVAL="${POLL_INTERVAL:-10}"  # seconds
+MAX_WAIT_TIME="${MAX_WAIT_TIME:-300}"  # 5 minutes max
 
 # Colors
 RED='\033[0;31m'
@@ -66,6 +133,7 @@ setup_results_dir() {
 
 get_instance_id() {
     local component="$1"
+    # AWS CLI uses exported AWS_PROFILE automatically
     # Include all states to find instances even after completion
     aws ec2 describe-instances \
         --region "$AWS_REGION" \
@@ -81,17 +149,32 @@ get_instance_status() {
         return
     fi
     # Use describe-instances (not describe-instance-status) to get state for any instance
-    local status=$(aws ec2 describe-instances \
+    # AWS CLI uses exported AWS_PROFILE automatically
+    local status
+    local err_output
+    local exit_code=0
+
+    err_output=$(aws ec2 describe-instances \
         --region "$AWS_REGION" \
         --instance-ids "$instance_id" \
         --query 'Reservations[0].Instances[0].State.Name' \
-        --output text 2>/dev/null || echo "error")
+        --output text --no-cli-pager 2>&1) || exit_code=$?
+
+    if [ $exit_code -ne 0 ]; then
+        # Check if it's a credentials error
+        if echo "$err_output" | grep -qi "credentials\|expired\|unauthorized\|accessdenied"; then
+            echo "ERROR:credentials"
+        else
+            echo "ERROR:$err_output"
+        fi
+        return
+    fi
 
     # Handle None or empty response
-    if [ "$status" = "None" ] || [ -z "$status" ] || [ "$status" = "error" ]; then
+    if [ "$err_output" = "None" ] || [ -z "$err_output" ]; then
         echo "pending"  # Likely still initializing
     else
-        echo "$status"
+        echo "$err_output"
     fi
 }
 
@@ -119,6 +202,7 @@ fetch_cloudwatch_logs_realtime() {
         return
     fi
 
+    # AWS CLI uses exported AWS_PROFILE automatically
     local log_group="/paraflow/jobs/$job_id"
     local log_stream="${instance_id}/${component}/user-data"
 
@@ -165,6 +249,7 @@ fetch_benchmark_metrics() {
         return
     fi
 
+    # AWS CLI uses exported AWS_PROFILE automatically
     log_info "Fetching benchmark metrics from CloudWatch logs..."
 
     # Try to fetch metrics from CloudWatch logs (worker writes benchmark-metrics.json content to logs)
@@ -181,29 +266,61 @@ fetch_benchmark_metrics() {
         --output text 2>/dev/null || echo "")
 
     if [ -n "$logs" ] && [ "$logs" != "None" ]; then
-        # Try to find the benchmark metrics JSON in the logs
-        # The worker outputs: Metrics: files=X records=Y throughput=Z rec/s W MB/s
-        local files=$(echo "$logs" | grep -oP 'files=\K\d+' | tail -1 || echo "0")
-        local records=$(echo "$logs" | grep -oP 'records=\K[\d,]+' | tail -1 | tr -d ',' || echo "0")
-        local rec_per_sec=$(echo "$logs" | grep -oP 'throughput=\K[\d,]+' | tail -1 | tr -d ',' || echo "0")
-        local mb_per_sec=$(echo "$logs" | grep -oP '[\d.]+(?= MB/s)' | tail -1 || echo "0")
+        # Try to find the benchmark metrics from the logs
+        # Worker outputs: "Metrics: files=X records=Y throughput=Z rec/s W MB/s"
+        # Use sed instead of grep -P for macOS compatibility
+        local files=$(echo "$logs" | sed -n 's/.*files=\([0-9]*\).*/\1/p' | tail -1)
+        local records=$(echo "$logs" | sed -n 's/.*records=\([0-9,]*\).*/\1/p' | tail -1 | tr -d ',')
+        local rec_per_sec=$(echo "$logs" | sed -n 's/.*throughput=\([0-9,]*\).*/\1/p' | tail -1 | tr -d ',')
+        # MB/s pattern: "rec/s X MB/s" - extract number before " MB/s"
+        local mb_per_sec=$(echo "$logs" | sed -n 's/.*rec\/s[[:space:]]*\([0-9.]*\)[[:space:]]*MB\/s.*/\1/p' | tail -1)
 
-        # Also try to extract from JSON format in logs
+        # Set defaults if empty
+        files="${files:-0}"
+        records="${records:-0}"
+        rec_per_sec="${rec_per_sec:-0}"
+        mb_per_sec="${mb_per_sec:-0}"
+
+        # Also try to extract from JSON format in logs (benchmark_mode=true)
         if [ "$files" = "0" ]; then
-            files=$(echo "$logs" | grep -oP '"files":\s*\K\d+' | tail -1 || echo "0")
+            files=$(echo "$logs" | sed -n 's/.*"files":[[:space:]]*\([0-9]*\).*/\1/p' | tail -1)
+            files="${files:-0}"
         fi
         if [ "$records" = "0" ]; then
-            records=$(echo "$logs" | grep -oP '"records":\s*\K\d+' | tail -1 || echo "0")
+            records=$(echo "$logs" | sed -n 's/.*"records":[[:space:]]*\([0-9]*\).*/\1/p' | tail -1)
+            records="${records:-0}"
         fi
         if [ "$rec_per_sec" = "0" ]; then
-            rec_per_sec=$(echo "$logs" | grep -oP '"rec_per_sec":\s*\K\d+' | tail -1 || echo "0")
+            rec_per_sec=$(echo "$logs" | sed -n 's/.*"rec_per_sec":[[:space:]]*\([0-9]*\).*/\1/p' | tail -1)
+            rec_per_sec="${rec_per_sec:-0}"
         fi
         if [ "$mb_per_sec" = "0" ]; then
-            mb_per_sec=$(echo "$logs" | grep -oP '"mb_per_sec":\s*\K[\d.]+' | tail -1 || echo "0")
+            mb_per_sec=$(echo "$logs" | sed -n 's/.*"mb_per_sec":[[:space:]]*\([0-9.]*\).*/\1/p' | tail -1)
+            mb_per_sec="${mb_per_sec:-0}"
         fi
 
         # Extract duration from "Worker Complete (Xs, exit=0)" message
-        local duration=$(echo "$logs" | grep -oP 'Worker Complete \(\K\d+' | tail -1 || echo "0")
+        local duration=$(echo "$logs" | sed -n 's/.*Worker Complete (\([0-9]*\)s.*/\1/p' | tail -1)
+        duration="${duration:-0}"
+
+        # Calculate derived metrics
+        local files_per_sec=0
+        local bytes_read="0 bytes"
+        if [ "$duration" -gt 0 ] && [ "$files" -gt 0 ]; then
+            files_per_sec=$(echo "scale=2; $files / $duration" | bc 2>/dev/null || echo "0")
+        fi
+        if [ "$duration" -gt 0 ] && [ "$mb_per_sec" != "0" ]; then
+            # Estimate total bytes read: MB/s * duration * 1024 * 1024
+            local total_mb=$(echo "scale=2; $mb_per_sec * $duration" | bc 2>/dev/null || echo "0")
+            if [ "$total_mb" != "0" ]; then
+                if [ "$(echo "$total_mb >= 1024" | bc 2>/dev/null)" = "1" ]; then
+                    local total_gb=$(echo "scale=2; $total_mb / 1024" | bc 2>/dev/null || echo "0")
+                    bytes_read="${total_gb} GB"
+                else
+                    bytes_read="${total_mb} MB"
+                fi
+            fi
+        fi
 
         log_info "Extracted metrics: files=$files, records=$records, $rec_per_sec rec/s, $mb_per_sec MB/s, duration=${duration}s"
 
@@ -218,7 +335,8 @@ fetch_benchmark_metrics() {
         "records_processed": $records,
         "records_per_second": $rec_per_sec,
         "mb_per_second": $mb_per_sec,
-        "files_per_second": 0
+        "files_per_second": $files_per_sec,
+        "bytes_read": "$bytes_read"
     },
     "duration": $duration,
     "source": "cloudwatch_logs"
@@ -249,14 +367,21 @@ parse_worker_metrics() {
         WORKER_BYTES_READ=$(jq -r '.throughput.bytes_read // "0 bytes"' "$metrics_file" 2>/dev/null || echo "0 bytes")
         WORKER_DURATION=$(jq -r '.duration // 0' "$metrics_file" 2>/dev/null || echo "0")
     else
-        # Fallback to grep
-        WORKER_FILES_PROCESSED=$(grep -oP '"files_processed":\s*\K\d+' "$metrics_file" 2>/dev/null | head -1 || echo "0")
-        WORKER_RECORDS_PROCESSED=$(grep -oP '"records_processed":\s*\K\d+' "$metrics_file" 2>/dev/null | head -1 || echo "0")
-        WORKER_FILES_PER_SEC=$(grep -oP '"files_per_second":\s*\K[\d.]+' "$metrics_file" 2>/dev/null | head -1 || echo "0")
-        WORKER_RECORDS_PER_SEC=$(grep -oP '"records_per_second":\s*\K\d+' "$metrics_file" 2>/dev/null | head -1 || echo "0")
-        WORKER_MB_PER_SEC=$(grep -oP '"mb_per_second":\s*\K[\d.]+' "$metrics_file" 2>/dev/null | head -1 || echo "0")
-        WORKER_BYTES_READ=$(grep -oP '"bytes_read":\s*"\K[^"]+' "$metrics_file" 2>/dev/null | head -1 || echo "0 bytes")
-        WORKER_DURATION=$(grep -oP '"duration":\s*\K\d+' "$metrics_file" 2>/dev/null | head -1 || echo "0")
+        # Fallback to sed (macOS compatible)
+        WORKER_FILES_PROCESSED=$(sed -n 's/.*"files_processed":[[:space:]]*\([0-9]*\).*/\1/p' "$metrics_file" 2>/dev/null | head -1)
+        WORKER_FILES_PROCESSED="${WORKER_FILES_PROCESSED:-0}"
+        WORKER_RECORDS_PROCESSED=$(sed -n 's/.*"records_processed":[[:space:]]*\([0-9]*\).*/\1/p' "$metrics_file" 2>/dev/null | head -1)
+        WORKER_RECORDS_PROCESSED="${WORKER_RECORDS_PROCESSED:-0}"
+        WORKER_FILES_PER_SEC=$(sed -n 's/.*"files_per_second":[[:space:]]*\([0-9.]*\).*/\1/p' "$metrics_file" 2>/dev/null | head -1)
+        WORKER_FILES_PER_SEC="${WORKER_FILES_PER_SEC:-0}"
+        WORKER_RECORDS_PER_SEC=$(sed -n 's/.*"records_per_second":[[:space:]]*\([0-9]*\).*/\1/p' "$metrics_file" 2>/dev/null | head -1)
+        WORKER_RECORDS_PER_SEC="${WORKER_RECORDS_PER_SEC:-0}"
+        WORKER_MB_PER_SEC=$(sed -n 's/.*"mb_per_second":[[:space:]]*\([0-9.]*\).*/\1/p' "$metrics_file" 2>/dev/null | head -1)
+        WORKER_MB_PER_SEC="${WORKER_MB_PER_SEC:-0}"
+        WORKER_BYTES_READ=$(sed -n 's/.*"bytes_read":[[:space:]]*"\([^"]*\)".*/\1/p' "$metrics_file" 2>/dev/null | head -1)
+        WORKER_BYTES_READ="${WORKER_BYTES_READ:-0 bytes}"
+        WORKER_DURATION=$(sed -n 's/.*"duration":[[:space:]]*\([0-9]*\).*/\1/p' "$metrics_file" 2>/dev/null | head -1)
+        WORKER_DURATION="${WORKER_DURATION:-0}"
     fi
 
     log_info "Parsed metrics: files=$WORKER_FILES_PROCESSED, records=$WORKER_RECORDS_PROCESSED, throughput=$WORKER_RECORDS_PER_SEC rec/s, $WORKER_MB_PER_SEC MB/s, duration=${WORKER_DURATION}s"
@@ -267,6 +392,8 @@ wait_for_completion() {
     local run_dir="$2"
     local start_time=$(date +%s)
     local poll_count=0
+    local queue_had_messages=false
+    local queue_empty_since=0
 
     log_info "Waiting for job completion (polling every ${POLL_INTERVAL}s, max ${MAX_WAIT_TIME}s)..."
     log_info "Using terraform instance IDs: discoverer=$DISCOVERER_INSTANCE_ID, worker=$WORKER_INSTANCE_ID"
@@ -283,21 +410,114 @@ wait_for_completion() {
 
         echo "--- Poll #$poll_count (elapsed: ${elapsed}s) ---"
 
+        # Re-verify credentials every 5 polls to catch expired SSO tokens
+        if [ $((poll_count % 5)) -eq 0 ]; then
+            # shellcheck disable=SC2086
+            if ! aws sts get-caller-identity --no-cli-pager >/dev/null 2>&1; then
+                log_error "AWS credentials have expired or are no longer valid!"
+                log_error "Please refresh your credentials and try again."
+                log_error "For SSO: aws sso login --profile your-profile-name"
+                return 1
+            fi
+        fi
+
+        # FIRST: Check CloudWatch logs for "Worker Complete" message (prioritize this check)
+        # This catches fast jobs that complete between polls
+        local worker_id="$WORKER_INSTANCE_ID"
+        if [ "$worker_id" = "N/A" ] || [ -z "$worker_id" ]; then
+            worker_id=$(get_instance_id "worker")
+        fi
+
+        if [ "$worker_id" != "None" ] && [ "$worker_id" != "N/A" ] && [ -n "$worker_id" ]; then
+            local log_group="/paraflow/jobs/$job_id"
+            local log_stream="${worker_id}/worker/user-data"
+            log_info "Checking for Worker Complete in $log_group (stream: $log_stream)..."
+
+            # Capture both stdout and stderr
+            # Use || true to prevent set -e from exiting on non-zero
+            local log_output=""
+            local log_error=""
+            local exit_code=0
+            # shellcheck disable=SC2086
+            log_error=$(aws logs get-log-events \
+                --region "$AWS_REGION" \
+                --log-group-name "$log_group" \
+                --log-stream-name "$log_stream" \
+                --limit 50 \
+                --query 'events[*].message' \
+                --output text \
+                --no-cli-pager 2>&1) || exit_code=$?
+
+            if [ $exit_code -eq 0 ]; then
+                log_output="$log_error"
+                if [ -n "$log_output" ] && [ "$log_output" != "None" ]; then
+                    log_info "Got log output (${#log_output} chars), checking for Worker Complete..."
+                    if echo "$log_output" | grep -q "Worker Complete"; then
+                        echo ""
+                        log_success "Worker Complete message found in logs - job finished!"
+                        # Display final metrics from logs (filter out set -x trace lines starting with +)
+                        echo "--- Final Worker Output ---"
+                        echo "$log_output" | grep -v '^[[:space:]]*+' | tail -10
+                        echo "--- End Final Output ---"
+                        break
+                    fi
+                else
+                    log_info "Log stream exists but no events yet"
+                fi
+            else
+                # Check for credential errors vs log group not existing
+                if echo "$log_error" | grep -qi "credentials\|expired\|unauthorized\|accessdenied"; then
+                    log_error "AWS credentials error while querying CloudWatch logs!"
+                    log_error "Run: export AWS_PROFILE=your-profile-name"
+                    return 1
+                elif echo "$log_error" | grep -q "ResourceNotFoundException"; then
+                    # Log group/stream may not exist yet if instance just started
+                    log_info "CloudWatch log stream not available yet (instance still starting)"
+                else
+                    log_warn "CloudWatch logs query failed (exit=$exit_code): $log_error"
+                fi
+            fi
+        fi
+
         # Check discoverer instance - use terraform ID if available, else query by tag
         local discoverer_id="$DISCOVERER_INSTANCE_ID"
         if [ "$discoverer_id" = "N/A" ] || [ -z "$discoverer_id" ]; then
             discoverer_id=$(get_instance_id "discoverer")
         fi
         local discoverer_status=$(get_instance_status "$discoverer_id")
+
+        # Check for credential errors
+        if [[ "$discoverer_status" == ERROR:credentials* ]]; then
+            log_error "AWS credentials error! Please check your AWS_PROFILE or credentials."
+            log_error "Run: export AWS_PROFILE=your-profile-name"
+            return 1
+        fi
         log_info "Discoverer: ID=$discoverer_id, Status=$discoverer_status"
 
-        # Check worker instance - use terraform ID if available, else query by tag
-        local worker_id="$WORKER_INSTANCE_ID"
-        if [ "$worker_id" = "N/A" ] || [ -z "$worker_id" ]; then
-            worker_id=$(get_instance_id "worker")
-        fi
+        # Check worker instance status (worker_id already set above)
         local worker_status=$(get_instance_status "$worker_id")
+
+        # Check for credential errors
+        if [[ "$worker_status" == ERROR:credentials* ]]; then
+            log_error "AWS credentials error! Please check your AWS_PROFILE or credentials."
+            log_error "Run: export AWS_PROFILE=your-profile-name"
+            return 1
+        fi
         log_info "Worker: ID=$worker_id, Status=$worker_status"
+
+        # Check if instances no longer exist (InvalidInstanceID.NotFound means they were terminated/deleted)
+        if [[ "$worker_status" == ERROR:*NotFound* ]] && [[ "$discoverer_status" == ERROR:*NotFound* ]]; then
+            echo ""
+            # Only treat as success if we've seen the queue have messages at some point
+            # or if we're past the first few polls (instances had time to start)
+            if [ "$queue_had_messages" = true ] || [ "$poll_count" -gt 5 ]; then
+                log_success "Both instances no longer exist - job has completed and instances were terminated"
+                break
+            else
+                log_warn "Instances not found on poll #$poll_count - they may have failed to start or are still being created"
+                log_warn "Waiting for instances to appear..."
+            fi
+        fi
 
         # Fetch CloudWatch logs from both discoverer and worker (every poll)
         log_info "Fetching CloudWatch logs..."
@@ -306,6 +526,7 @@ wait_for_completion() {
 
         # Fetch EC2 console output as fallback (every 3rd poll, before CloudWatch logs are available)
         if [ $((poll_count % 3)) -eq 1 ] && [ "$worker_id" != "None" ] && [ "$worker_id" != "N/A" ] && [ -n "$worker_id" ]; then
+            # shellcheck disable=SC2086
             local console_output=$(aws ec2 get-console-output --region "$AWS_REGION" --instance-id "$worker_id" --query 'Output' --output text 2>/dev/null | tail -50 || echo "")
             if [ -n "$console_output" ] && [ "$console_output" != "None" ]; then
                 echo "--- Worker EC2 Console (bootstrap) ---"
@@ -317,13 +538,25 @@ wait_for_completion() {
         # Check SQS queue for messages - use terraform URL if available
         local queue_url="$SQS_QUEUE_URL"
         if [ "$queue_url" = "N/A" ] || [ -z "$queue_url" ]; then
+            # shellcheck disable=SC2086
             queue_url=$(aws sqs list-queues --region "$AWS_REGION" --queue-name-prefix "paraflow-$job_id" --query 'QueueUrls[0]' --output text 2>/dev/null || echo "")
         fi
+        local visible="0"
+        local in_flight="0"
         if [ -n "$queue_url" ] && [ "$queue_url" != "None" ] && [ "$queue_url" != "N/A" ]; then
-            local visible=$(aws sqs get-queue-attributes --region "$AWS_REGION" --queue-url "$queue_url" --attribute-names ApproximateNumberOfMessages --query 'Attributes.ApproximateNumberOfMessages' --output text 2>/dev/null || echo "0")
-            local in_flight=$(aws sqs get-queue-attributes --region "$AWS_REGION" --queue-url "$queue_url" --attribute-names ApproximateNumberOfMessagesNotVisible --query 'Attributes.ApproximateNumberOfMessagesNotVisible' --output text 2>/dev/null || echo "0")
+            # shellcheck disable=SC2086
+            visible=$(aws sqs get-queue-attributes --region "$AWS_REGION" --queue-url "$queue_url" --attribute-names ApproximateNumberOfMessages --query 'Attributes.ApproximateNumberOfMessages' --output text 2>/dev/null || echo "0")
+            # shellcheck disable=SC2086
+            in_flight=$(aws sqs get-queue-attributes --region "$AWS_REGION" --queue-url "$queue_url" --attribute-names ApproximateNumberOfMessagesNotVisible --query 'Attributes.ApproximateNumberOfMessagesNotVisible' --output text 2>/dev/null || echo "0")
 
-            log_info "SQS Queue: $visible visible, $in_flight in-flight"
+            # Track if queue ever had messages
+            local total_messages=$((visible + in_flight))
+            if [ "$total_messages" -gt 0 ]; then
+                queue_had_messages=true
+                queue_empty_since=0
+            fi
+
+            log_info "SQS Queue: $visible visible, $in_flight in-flight (had_messages=$queue_had_messages)"
 
             # Save queue metrics
             echo "{\"timestamp\":\"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\",\"visible\":$visible,\"in_flight\":$in_flight,\"elapsed\":$elapsed,\"worker_status\":\"$worker_status\",\"discoverer_status\":\"$discoverer_status\"}" >> "$run_dir/queue_metrics.jsonl"
@@ -338,11 +571,21 @@ wait_for_completion() {
             break
         fi
 
-        # If queue is empty and worker not running after initial startup
-        if [ "$visible" = "0" ] && [ "$in_flight" = "0" ] && [ "$worker_status" != "running" ] && [ "$elapsed" -gt 120 ]; then
-            echo ""
-            log_success "Queue empty and worker not running - job complete"
-            break
+        # Track how long queue has been empty after having messages
+        if [ "$queue_had_messages" = true ] && [ "$visible" = "0" ] && [ "$in_flight" = "0" ]; then
+            if [ "$queue_empty_since" -eq 0 ]; then
+                queue_empty_since=$(date +%s)
+                log_info "Queue drained - waiting 30s to confirm completion..."
+            else
+                local empty_duration=$(($(date +%s) - queue_empty_since))
+                if [ "$empty_duration" -ge 30 ]; then
+                    echo ""
+                    log_success "Queue drained and empty for ${empty_duration}s - job complete"
+                    break
+                else
+                    log_info "Queue empty for ${empty_duration}s (waiting for 30s)"
+                fi
+            fi
         fi
 
         echo ""
@@ -367,6 +610,7 @@ collect_cloudwatch_metrics() {
     local namespace="Paraflow/$job_id"
 
     # Collect CPU metrics
+    # shellcheck disable=SC2086
     aws cloudwatch get-metric-statistics \
         --region "$AWS_REGION" \
         --namespace "$namespace" \
@@ -378,6 +622,7 @@ collect_cloudwatch_metrics() {
         --output json > "$run_dir/cpu_metrics.json" 2>/dev/null || echo "{}" > "$run_dir/cpu_metrics.json"
 
     # Collect memory metrics
+    # shellcheck disable=SC2086
     aws cloudwatch get-metric-statistics \
         --region "$AWS_REGION" \
         --namespace "$namespace" \
@@ -389,6 +634,7 @@ collect_cloudwatch_metrics() {
         --output json > "$run_dir/memory_metrics.json" 2>/dev/null || echo "{}" > "$run_dir/memory_metrics.json"
 
     # Collect network metrics
+    # shellcheck disable=SC2086
     aws cloudwatch get-metric-statistics \
         --region "$AWS_REGION" \
         --namespace "$namespace" \
@@ -411,6 +657,7 @@ collect_logs() {
     local log_group="/paraflow/$job_id"
 
     # Get log streams
+    # shellcheck disable=SC2086
     aws logs describe-log-streams \
         --region "$AWS_REGION" \
         --log-group-name "$log_group" \
@@ -421,6 +668,7 @@ collect_logs() {
     local end_time=$(($(date +%s) * 1000))
     local start_time=$((end_time - 14400000))  # 4 hours ago
 
+    # shellcheck disable=SC2086
     aws logs filter-log-events \
         --region "$AWS_REGION" \
         --log-group-name "$log_group" \
@@ -616,12 +864,60 @@ EOF
     WORKER_INSTANCE_ID=$(terraform output -raw worker_instance_id 2>/dev/null || echo "N/A")
     local ecr_repository=$(terraform output -raw ecr_repository_url 2>/dev/null || echo "N/A")
 
+    # CRITICAL: Get region from terraform - it may differ from AWS_REGION env var
+    local tf_region
+    tf_region=$(terraform output -raw aws_region 2>/dev/null || echo "")
+    if [ -n "$tf_region" ] && [ "$tf_region" != "$AWS_REGION" ]; then
+        log_warn "Terraform region ($tf_region) differs from AWS_REGION ($AWS_REGION)"
+        log_info "Updating AWS_REGION to match terraform deployment region"
+        export AWS_REGION="$tf_region"
+        export AWS_DEFAULT_REGION="$tf_region"
+    fi
+
     log_success "Infrastructure deployed successfully!"
     log_info "  Job ID: $JOB_ID"
+    log_info "  Region: $AWS_REGION"
     log_info "  SQS Queue: $SQS_QUEUE_URL"
     log_info "  ECR Repository: $ecr_repository"
     log_info "  Discoverer Instance: $DISCOVERER_INSTANCE_ID"
     log_info "  Worker Instance: $WORKER_INSTANCE_ID"
+
+    # Verify instances exist before proceeding
+    log_info "Verifying instances are running..."
+    local max_verify_attempts=30
+    local verify_attempt=0
+    while [ $verify_attempt -lt $max_verify_attempts ]; do
+        verify_attempt=$((verify_attempt + 1))
+        local worker_state=$(get_instance_status "$WORKER_INSTANCE_ID")
+        local discoverer_state=$(get_instance_status "$DISCOVERER_INSTANCE_ID")
+
+        # Show current states for debugging
+        if [ $verify_attempt -le 3 ] || [ $((verify_attempt % 5)) -eq 0 ]; then
+            log_info "Instance states - worker: $worker_state, discoverer: $discoverer_state"
+        fi
+
+        if [[ "$worker_state" != ERROR:* ]] && [[ "$discoverer_state" != ERROR:* ]]; then
+            log_success "Instances verified: worker=$worker_state, discoverer=$discoverer_state"
+            break
+        fi
+
+        # Check for credential errors and fail fast
+        if [[ "$worker_state" == ERROR:credentials* ]] || [[ "$discoverer_state" == ERROR:credentials* ]]; then
+            log_error "AWS credentials error during instance verification!"
+            log_error "Please ensure AWS_PROFILE is set correctly."
+            return 1
+        fi
+
+        if [ $verify_attempt -eq $max_verify_attempts ]; then
+            log_error "Instances failed to start after $max_verify_attempts attempts"
+            log_error "Worker status: $worker_state"
+            log_error "Discoverer status: $discoverer_state"
+            return 1
+        fi
+
+        log_info "Waiting for instances to be ready (attempt $verify_attempt/$max_verify_attempts)..."
+        sleep 5
+    done
 
     # Cleanup plan file
     rm -f "benchmark.tfplan"

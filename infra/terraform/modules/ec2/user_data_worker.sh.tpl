@@ -1,5 +1,5 @@
 #!/bin/bash
-set -ex
+set -e
 
 # Paraflow Worker Bootstrap Script
 COMPONENT="worker"
@@ -12,8 +12,16 @@ START_TIME=$(date +%s)
 
 exec > >(tee -a /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1
 
+# Auto-detect CPU cores for thread count (use configured value of 0 means auto)
+CONFIGURED_THREADS="${worker_threads}"
+if [ "$CONFIGURED_THREADS" -eq 0 ] || [ "$CONFIGURED_THREADS" = "auto" ]; then
+    WORKER_THREADS=$(nproc)
+else
+    WORKER_THREADS="$CONFIGURED_THREADS"
+fi
+
 echo "=== Paraflow Worker Bootstrap ==="
-echo "Region: $AWS_REGION | Job: $JOB_ID | Threads: ${worker_threads} | Batch: ${batch_size}"
+echo "Region: $AWS_REGION | Job: $JOB_ID | CPUs: $(nproc) | Threads: $WORKER_THREADS | Batch: ${batch_size}"
 
 # CloudWatch Agent (optional) - install only if monitoring enabled
 if [ "$ENABLE_MONITORING" = "true" ]; then
@@ -44,7 +52,7 @@ CONTAINER_START=$(date +%s)
 docker run --rm --name pf-worker -e AWS_REGION=$AWS_REGION \
   ${ecr_repository}:${image_tag} \
   --input sqs --sqs-queue-url ${sqs_queue_url} --destination stats \
-  --threads ${worker_threads} --batch-size ${batch_size} \
+  --threads $WORKER_THREADS --batch-size ${batch_size} \
   --sqs-drain --region $AWS_REGION --progress --log-level info 2>&1 | tee "$WORKER_LOG"
 
 EXIT_CODE=$${PIPESTATUS[0]}

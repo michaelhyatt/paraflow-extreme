@@ -86,6 +86,8 @@ module "ec2" {
   source_prefix = var.source_prefix
   file_pattern  = var.file_pattern
   max_files     = var.max_files
+  partitioning  = var.partitioning
+  filter        = var.filter
 
   # SQS
   sqs_queue_url = module.sqs.queue_url

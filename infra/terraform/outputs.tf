@@ -7,6 +7,11 @@ output "job_id" {
   value       = var.job_id
 }
 
+output "aws_region" {
+  description = "AWS region where resources are deployed"
+  value       = var.aws_region
+}
+
 # ============================================================================
 # ECR Outputs
 # ============================================================================
