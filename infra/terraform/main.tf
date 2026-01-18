@@ -110,6 +110,9 @@ module "ec2" {
   enable_profiling = var.enable_profiling
   artifacts_bucket = var.artifacts_bucket
 
+  # Queue pre-population
+  prepopulate_queue = var.prepopulate_queue
+
   # Implicit dependencies via sqs_queue_url, sqs_queue_arn, and log_group_name
   # Terraform automatically orders creation based on these references
 }

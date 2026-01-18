@@ -8,6 +8,7 @@ AWS_REGION="${aws_region}"
 LOG_GROUP="${log_group_name}"
 ENABLE_MONITORING="${enable_detailed_monitoring}"
 BENCHMARK_MODE="${benchmark_mode}"
+PREPOPULATE_QUEUE="${prepopulate_queue}"
 START_TIME=$(date +%s)
 
 exec > >(tee -a /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1
@@ -72,6 +73,18 @@ if [ "$FILES_QUEUED" = "0" ]; then
 fi
 
 echo "Discoverer metrics: files_discovered=$FILES_DISCOVERED files_queued=$FILES_QUEUED duration=$${DURATION}s"
+
+# Signal workers that queue is fully populated (prepopulate_queue mode)
+if [ "$PREPOPULATE_QUEUE" = "true" ] && [ $EXIT_CODE -eq 0 ]; then
+    echo "Signaling workers that queue is fully populated..."
+    SSM_PARAM="/paraflow/$JOB_ID/discoverer-done"
+    aws ssm put-parameter --region $AWS_REGION \
+        --name "$SSM_PARAM" \
+        --value "{\"files_queued\":$FILES_QUEUED,\"timestamp\":\"$(date -Iseconds)\"}" \
+        --type String \
+        --overwrite 2>&1 || echo "WARNING: Failed to set SSM parameter"
+    echo "SSM parameter $SSM_PARAM set - workers can now start processing"
+fi
 
 # Benchmark metrics
 if [ "$BENCHMARK_MODE" = "true" ]; then

@@ -182,3 +182,13 @@ variable "artifacts_bucket" {
   type        = string
   default     = ""
 }
+
+# ============================================================================
+# Queue Pre-population Configuration
+# ============================================================================
+
+variable "prepopulate_queue" {
+  description = "Wait for discoverer to fully populate the queue before workers start processing. When true, workers wait for discoverer to complete and signal via SSM parameter."
+  type        = bool
+  default     = false
+}

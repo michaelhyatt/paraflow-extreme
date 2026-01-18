@@ -10,6 +10,7 @@ ENABLE_MONITORING="${enable_detailed_monitoring}"
 BENCHMARK_MODE="${benchmark_mode}"
 ENABLE_PROFILING="${enable_profiling}"
 ARTIFACTS_BUCKET="${artifacts_bucket}"
+PREPOPULATE_QUEUE="${prepopulate_queue}"
 START_TIME=$(date +%s)
 
 exec > >(tee -a /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1
@@ -47,36 +48,76 @@ aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --
 docker pull "${ecr_repository}:${image_tag}"
 
 # Wait for discoverer to populate the queue
-echo "Waiting for discoverer to populate SQS queue..."
 SQS_QUEUE_URL="${sqs_queue_url}"
-MAX_WAIT=300  # 5 minutes max wait for first message
 POLL_INTERVAL=5
-WAITED=0
 
-while [ $WAITED -lt $MAX_WAIT ]; do
-    # Check queue for messages (visible + in-flight)
-    QUEUE_ATTRS=$(aws sqs get-queue-attributes --region $AWS_REGION \
-        --queue-url "$SQS_QUEUE_URL" \
-        --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible \
-        --output json 2>/dev/null || echo '{}')
+if [ "$PREPOPULATE_QUEUE" = "true" ]; then
+    # Prepopulate mode: wait for discoverer to COMPLETE (via SSM parameter)
+    echo "Prepopulate mode: waiting for discoverer to fully populate the queue..."
+    SSM_PARAM="/paraflow/$JOB_ID/discoverer-done"
+    MAX_WAIT=1800  # 30 minutes max wait for full population
+    WAITED=0
 
-    VISIBLE=$(echo "$QUEUE_ATTRS" | grep -o '"ApproximateNumberOfMessages"[^,}]*' | grep -o '[0-9]*' || echo "0")
-    IN_FLIGHT=$(echo "$QUEUE_ATTRS" | grep -o '"ApproximateNumberOfMessagesNotVisible"[^,}]*' | grep -o '[0-9]*' || echo "0")
-    TOTAL=$((VISIBLE + IN_FLIGHT))
+    while [ $WAITED -lt $MAX_WAIT ]; do
+        # Check if discoverer has signaled completion
+        SSM_VALUE=$(aws ssm get-parameter --region $AWS_REGION \
+            --name "$SSM_PARAM" \
+            --query 'Parameter.Value' \
+            --output text 2>/dev/null || echo "")
 
-    if [ "$TOTAL" -gt 0 ]; then
-        echo "Queue has $TOTAL messages (visible=$VISIBLE, in-flight=$IN_FLIGHT) - starting worker"
-        break
+        if [ -n "$SSM_VALUE" ] && [ "$SSM_VALUE" != "None" ]; then
+            echo "Discoverer completed: $SSM_VALUE"
+
+            # Get final queue status
+            QUEUE_ATTRS=$(aws sqs get-queue-attributes --region $AWS_REGION \
+                --queue-url "$SQS_QUEUE_URL" \
+                --attribute-names ApproximateNumberOfMessages \
+                --output json 2>/dev/null || echo '{}')
+            VISIBLE=$(echo "$QUEUE_ATTRS" | grep -o '"ApproximateNumberOfMessages"[^,}]*' | grep -o '[0-9]*' || echo "0")
+            echo "Queue has $VISIBLE messages ready - starting worker"
+            break
+        fi
+
+        echo "Waiting for discoverer to complete... ($WAITED/$MAX_WAIT seconds)"
+        sleep $POLL_INTERVAL
+        WAITED=$((WAITED + POLL_INTERVAL))
+    done
+
+    if [ $WAITED -ge $MAX_WAIT ]; then
+        echo "WARNING: Timed out waiting for discoverer to complete after $${MAX_WAIT}s"
+        echo "Proceeding anyway - discoverer may have failed"
     fi
+else
+    # Normal mode: start as soon as first message appears
+    echo "Waiting for discoverer to populate SQS queue..."
+    MAX_WAIT=300  # 5 minutes max wait for first message
+    WAITED=0
 
-    echo "Queue empty, waiting for discoverer... ($WAITED/$MAX_WAIT seconds)"
-    sleep $POLL_INTERVAL
-    WAITED=$((WAITED + POLL_INTERVAL))
-done
+    while [ $WAITED -lt $MAX_WAIT ]; do
+        # Check queue for messages (visible + in-flight)
+        QUEUE_ATTRS=$(aws sqs get-queue-attributes --region $AWS_REGION \
+            --queue-url "$SQS_QUEUE_URL" \
+            --attribute-names ApproximateNumberOfMessages ApproximateNumberOfMessagesNotVisible \
+            --output json 2>/dev/null || echo '{}')
 
-if [ $WAITED -ge $MAX_WAIT ]; then
-    echo "WARNING: Timed out waiting for messages in queue after $${MAX_WAIT}s"
-    echo "Proceeding anyway - discoverer may have failed or no files matched"
+        VISIBLE=$(echo "$QUEUE_ATTRS" | grep -o '"ApproximateNumberOfMessages"[^,}]*' | grep -o '[0-9]*' || echo "0")
+        IN_FLIGHT=$(echo "$QUEUE_ATTRS" | grep -o '"ApproximateNumberOfMessagesNotVisible"[^,}]*' | grep -o '[0-9]*' || echo "0")
+        TOTAL=$((VISIBLE + IN_FLIGHT))
+
+        if [ "$TOTAL" -gt 0 ]; then
+            echo "Queue has $TOTAL messages (visible=$VISIBLE, in-flight=$IN_FLIGHT) - starting worker"
+            break
+        fi
+
+        echo "Queue empty, waiting for discoverer... ($WAITED/$MAX_WAIT seconds)"
+        sleep $POLL_INTERVAL
+        WAITED=$((WAITED + POLL_INTERVAL))
+    done
+
+    if [ $WAITED -ge $MAX_WAIT ]; then
+        echo "WARNING: Timed out waiting for messages in queue after $${MAX_WAIT}s"
+        echo "Proceeding anyway - discoverer may have failed or no files matched"
+    fi
 fi
 
 # Function to collect and upload profiling artifacts

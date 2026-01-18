@@ -116,18 +116,32 @@ resource "aws_iam_role_policy" "paraflow" {
         ]
         Resource = "*"
       }
-    ], var.enable_profiling && var.artifacts_bucket != "" ? [
-      # S3 - upload profiling artifacts
-      {
-        Sid    = "ProfilingArtifactsUpload"
-        Effect = "Allow"
-        Action = [
-          "s3:PutObject"
-        ]
-        Resource = [
-          "arn:aws:s3:::${var.artifacts_bucket}/profiling/*"
-        ]
-      }
+      ],
+      # SSM Parameter Store - for discoverer/worker coordination (prepopulate_queue mode)
+      var.prepopulate_queue ? [
+        {
+          Sid    = "SSMParameterCoordination"
+          Effect = "Allow"
+          Action = [
+            "ssm:PutParameter",
+            "ssm:GetParameter",
+            "ssm:DeleteParameter"
+          ]
+          Resource = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/paraflow/${var.job_id}/*"
+        }
+      ] : [],
+      var.enable_profiling && var.artifacts_bucket != "" ? [
+        # S3 - upload profiling artifacts
+        {
+          Sid    = "ProfilingArtifactsUpload"
+          Effect = "Allow"
+          Action = [
+            "s3:PutObject"
+          ]
+          Resource = [
+            "arn:aws:s3:::${var.artifacts_bucket}/profiling/*"
+          ]
+        }
     ] : [])
   })
 }
@@ -227,21 +241,22 @@ resource "aws_instance" "discoverer" {
   }
 
   user_data = base64encode(templatefile("${path.module}/user_data_discoverer.sh.tpl", {
-    aws_region                  = var.aws_region
-    ecr_repository              = var.ecr_repository
-    image_tag                   = var.image_tag
-    source_bucket               = var.source_bucket
-    source_prefix               = var.source_prefix
-    sqs_queue_url               = var.sqs_queue_url
-    file_pattern                = var.file_pattern
-    max_files                   = var.max_files
-    partitioning                = var.partitioning
-    filter                      = var.filter
-    log_group_name              = var.log_group_name
-    job_id                      = var.job_id
-    enable_detailed_monitoring  = var.enable_detailed_monitoring
-    bootstrap_timeout_seconds   = var.bootstrap_timeout_seconds
-    benchmark_mode              = var.benchmark_mode
+    aws_region                 = var.aws_region
+    ecr_repository             = var.ecr_repository
+    image_tag                  = var.image_tag
+    source_bucket              = var.source_bucket
+    source_prefix              = var.source_prefix
+    sqs_queue_url              = var.sqs_queue_url
+    file_pattern               = var.file_pattern
+    max_files                  = var.max_files
+    partitioning               = var.partitioning
+    filter                     = var.filter
+    log_group_name             = var.log_group_name
+    job_id                     = var.job_id
+    enable_detailed_monitoring = var.enable_detailed_monitoring
+    bootstrap_timeout_seconds  = var.bootstrap_timeout_seconds
+    benchmark_mode             = var.benchmark_mode
+    prepopulate_queue          = var.prepopulate_queue
   }))
 
   tags = merge(
@@ -275,19 +290,20 @@ resource "aws_instance" "worker" {
   }
 
   user_data = base64encode(templatefile("${path.module}/user_data_worker.sh.tpl", {
-    aws_region                  = var.aws_region
-    ecr_repository              = var.ecr_repository
-    image_tag                   = var.image_tag
-    sqs_queue_url               = var.sqs_queue_url
-    worker_threads              = var.worker_threads
-    batch_size                  = var.batch_size
-    log_group_name              = var.log_group_name
-    job_id                      = var.job_id
-    enable_detailed_monitoring  = var.enable_detailed_monitoring
-    bootstrap_timeout_seconds   = var.bootstrap_timeout_seconds
-    benchmark_mode              = var.benchmark_mode
-    enable_profiling            = var.enable_profiling
-    artifacts_bucket            = var.artifacts_bucket
+    aws_region                 = var.aws_region
+    ecr_repository             = var.ecr_repository
+    image_tag                  = var.image_tag
+    sqs_queue_url              = var.sqs_queue_url
+    worker_threads             = var.worker_threads
+    batch_size                 = var.batch_size
+    log_group_name             = var.log_group_name
+    job_id                     = var.job_id
+    enable_detailed_monitoring = var.enable_detailed_monitoring
+    bootstrap_timeout_seconds  = var.bootstrap_timeout_seconds
+    benchmark_mode             = var.benchmark_mode
+    enable_profiling           = var.enable_profiling
+    artifacts_bucket           = var.artifacts_bucket
+    prepopulate_queue          = var.prepopulate_queue
   }))
 
   tags = merge(

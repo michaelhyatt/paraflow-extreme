@@ -11,8 +11,8 @@ vpc_id = "vpc-0a99600ed2fa7d002"
 # Source Data (NOAA Global Historical Climatology Network)
 source_bucket = "noaa-ghcn-pds"
 # source_prefix = "parquet/by_year/YEAR=2014/"
-file_pattern  = "*.parquet"
-max_files     = 20000
+file_pattern = "*.parquet"
+max_files    = 20000
 
 # Partitioning (for date-based discovery)
 partitioning = "parquet/by_year/YEAR=$${_time:%Y}/"
@@ -26,8 +26,8 @@ discoverer_instance_type = "t4g.small"  # 2 vCPU, 2GB RAM
 worker_instance_type     = "t4g.medium" # 2 vCPU, 4GB RAM
 
 # Worker Configuration
-worker_count   = 1   # Number of worker instances (for horizontal scaling)
-worker_threads = 0   # 0 = auto-detect from CPU cores
+worker_count   = 1 # Number of worker instances (for horizontal scaling)
+worker_threads = 0 # 0 = auto-detect from CPU cores
 batch_size     = 10000
 
 # SQS Configuration
@@ -51,7 +51,7 @@ log_retention_days = 30
 enable_detailed_monitoring = true
 
 # Bootstrap timeout - increase for larger instances or slow networks
-bootstrap_timeout_seconds = 600  # 10 minutes
+bootstrap_timeout_seconds = 600 # 10 minutes
 
 # Enable benchmark mode to collect performance metrics
 # Records to /var/log/benchmark-metrics.json on each instance
