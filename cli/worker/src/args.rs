@@ -64,6 +64,12 @@ pub struct Cli {
     #[arg(long)]
     pub sqs_drain: bool,
 
+    /// Number of concurrent SQS polling requests.
+    /// Higher values improve throughput by fetching more messages per cycle.
+    /// Recommended: 2-4 for high-throughput workloads.
+    #[arg(long, default_value = "2")]
+    pub sqs_concurrent_polls: usize,
+
     // === Destination ===
     /// Output destination type
     #[arg(short = 'd', long, value_enum, default_value = "stdout")]
