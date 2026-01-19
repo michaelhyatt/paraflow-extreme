@@ -99,6 +99,12 @@ pub struct Cli {
     #[arg(long, value_delimiter = ',', value_name = "COLUMNS")]
     pub columns: Option<Vec<String>>,
 
+    /// Filter expression for Parquet files (predicate pushdown).
+    /// Skips row groups that don't match the filter based on column statistics.
+    /// Examples: "id >= 100", "status = 'active'", "year > 2020"
+    #[arg(long, value_name = "EXPR")]
+    pub filter: Option<String>,
+
     // === Prefetch Configuration ===
     /// Maximum files to prefetch per thread.
     /// Higher values improve throughput by keeping more files ready for processing.

@@ -12,6 +12,7 @@ use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjectPath;
 use parquet::arrow::ProjectionMask;
+use parquet::arrow::arrow_reader::{ArrowPredicateFn, RowFilter};
 use parquet::arrow::async_reader::{ParquetObjectReader, ParquetRecordBatchStreamBuilder};
 use pf_error::{PfError, ReaderError, Result};
 use pf_traits::{BatchStream, FileMetadata, StreamingReader};
@@ -20,6 +21,64 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tracing::{debug, info, trace};
+
+/// A simple filter predicate for row filtering.
+///
+/// Supports basic comparisons: column op value where op is =, !=, <, <=, >, >=
+#[derive(Debug, Clone)]
+pub struct FilterPredicate {
+    /// Column name to filter on
+    pub column: String,
+    /// Comparison operator
+    pub op: FilterOp,
+    /// Value to compare against (as string, will be parsed based on column type)
+    pub value: String,
+}
+
+/// Filter comparison operators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterOp {
+    Eq,
+    NotEq,
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
+}
+
+impl FilterPredicate {
+    /// Parse a filter predicate from a string like "column >= value".
+    pub fn parse(s: &str) -> Option<Self> {
+        let s = s.trim();
+
+        // Try operators in order of length (longest first to avoid partial matches)
+        let ops = [
+            (">=", FilterOp::GtEq),
+            ("<=", FilterOp::LtEq),
+            ("!=", FilterOp::NotEq),
+            ("=", FilterOp::Eq),
+            (">", FilterOp::Gt),
+            ("<", FilterOp::Lt),
+        ];
+
+        for (op_str, op) in ops {
+            if let Some(pos) = s.find(op_str) {
+                let column = s[..pos].trim().to_string();
+                let value = s[pos + op_str.len()..].trim();
+                // Remove quotes if present
+                let value = value
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_string();
+
+                if !column.is_empty() && !value.is_empty() {
+                    return Some(Self { column, op, value });
+                }
+            }
+        }
+        None
+    }
+}
 
 /// Configuration for the Parquet reader.
 #[derive(Debug, Clone)]
@@ -45,6 +104,10 @@ pub struct ParquetReaderConfig {
     /// Optional column projection (list of column names to read).
     /// If None, all columns are read.
     pub projection: Option<Vec<String>>,
+
+    /// Optional filter predicate for row-level filtering.
+    /// Uses Parquet row group statistics for predicate pushdown.
+    pub filter: Option<FilterPredicate>,
 }
 
 impl ParquetReaderConfig {
@@ -58,6 +121,7 @@ impl ParquetReaderConfig {
             secret_key: None,
             session_token: None,
             projection: None,
+            filter: None,
         }
     }
 
@@ -92,6 +156,24 @@ impl ParquetReaderConfig {
     /// reducing I/O and improving performance for wide schemas.
     pub fn with_projection(mut self, columns: Vec<String>) -> Self {
         self.projection = Some(columns);
+        self
+    }
+
+    /// Set a filter predicate for row-level filtering.
+    ///
+    /// The filter uses Parquet row group statistics for predicate pushdown,
+    /// potentially skipping entire row groups that don't match the filter.
+    pub fn with_filter(mut self, filter: FilterPredicate) -> Self {
+        self.filter = Some(filter);
+        self
+    }
+
+    /// Set a filter predicate from a string expression.
+    ///
+    /// Parses expressions like "column >= value", "status = 'active'".
+    /// Returns None if the expression cannot be parsed.
+    pub fn with_filter_expr(mut self, expr: &str) -> Self {
+        self.filter = FilterPredicate::parse(expr);
         self
     }
 }
@@ -270,6 +352,90 @@ impl ParquetReader {
     }
 }
 
+/// Helper function to create a comparison mask for i32 arrays.
+fn create_comparison_mask_i32(
+    arr: &arrow::array::Int32Array,
+    op: FilterOp,
+    val: i32,
+) -> arrow::array::BooleanArray {
+    use arrow::array::{Array, BooleanArray};
+
+    let values: Vec<bool> = (0..arr.len())
+        .map(|i| {
+            if arr.is_null(i) {
+                false
+            } else {
+                let v = arr.value(i);
+                match op {
+                    FilterOp::Eq => v == val,
+                    FilterOp::NotEq => v != val,
+                    FilterOp::Lt => v < val,
+                    FilterOp::LtEq => v <= val,
+                    FilterOp::Gt => v > val,
+                    FilterOp::GtEq => v >= val,
+                }
+            }
+        })
+        .collect();
+    BooleanArray::from(values)
+}
+
+/// Helper function to create a comparison mask for i64 arrays.
+fn create_comparison_mask_i64(
+    arr: &arrow::array::Int64Array,
+    op: FilterOp,
+    val: i64,
+) -> arrow::array::BooleanArray {
+    use arrow::array::{Array, BooleanArray};
+
+    let values: Vec<bool> = (0..arr.len())
+        .map(|i| {
+            if arr.is_null(i) {
+                false
+            } else {
+                let v = arr.value(i);
+                match op {
+                    FilterOp::Eq => v == val,
+                    FilterOp::NotEq => v != val,
+                    FilterOp::Lt => v < val,
+                    FilterOp::LtEq => v <= val,
+                    FilterOp::Gt => v > val,
+                    FilterOp::GtEq => v >= val,
+                }
+            }
+        })
+        .collect();
+    BooleanArray::from(values)
+}
+
+/// Helper function to create a comparison mask for string arrays.
+fn create_comparison_mask_string(
+    arr: &arrow::array::StringArray,
+    op: FilterOp,
+    val: &str,
+) -> arrow::array::BooleanArray {
+    use arrow::array::{Array, BooleanArray};
+
+    let values: Vec<bool> = (0..arr.len())
+        .map(|i| {
+            if arr.is_null(i) {
+                false
+            } else {
+                let v = arr.value(i);
+                match op {
+                    FilterOp::Eq => v == val,
+                    FilterOp::NotEq => v != val,
+                    FilterOp::Lt => v < val,
+                    FilterOp::LtEq => v <= val,
+                    FilterOp::Gt => v > val,
+                    FilterOp::GtEq => v >= val,
+                }
+            }
+        })
+        .collect();
+    BooleanArray::from(values)
+}
+
 #[async_trait]
 impl StreamingReader for ParquetReader {
     async fn read_stream(&self, uri: &str) -> Result<BatchStream> {
@@ -343,6 +509,95 @@ impl StreamingReader for ParquetReader {
                 );
                 let projection = ProjectionMask::roots(parquet_schema, indices);
                 builder.with_projection(projection)
+            }
+        } else {
+            builder
+        };
+
+        // Apply row filter if specified
+        let builder = if let Some(ref filter) = self.config.filter {
+            let arrow_schema = builder.schema();
+
+            // Find the column index for the filter
+            if let Some(col_idx) = arrow_schema
+                .fields()
+                .iter()
+                .position(|f| f.name() == &filter.column)
+            {
+                debug!(
+                    uri = uri,
+                    filter_column = &filter.column,
+                    filter_op = ?filter.op,
+                    filter_value = &filter.value,
+                    "Applying row filter"
+                );
+
+                // Create projection mask for just the filter column
+                let filter_projection =
+                    ProjectionMask::roots(builder.parquet_schema(), vec![col_idx]);
+
+                // Clone filter values for the closure
+                let filter_value = filter.value.clone();
+                let filter_op = filter.op;
+
+                // Create the predicate function
+                let predicate_fn = move |batch: arrow::record_batch::RecordBatch| {
+                    use arrow::array::*;
+                    use arrow::datatypes::DataType;
+
+                    let col = batch.column(0);
+                    let num_rows = batch.num_rows();
+
+                    // Create boolean mask based on column type and operator
+                    let mask: BooleanArray = match col.data_type() {
+                        DataType::Int32 => {
+                            if let Some(arr) = col.as_any().downcast_ref::<Int32Array>() {
+                                if let Ok(val) = filter_value.parse::<i32>() {
+                                    create_comparison_mask_i32(arr, filter_op, val)
+                                } else {
+                                    BooleanArray::from(vec![true; num_rows])
+                                }
+                            } else {
+                                BooleanArray::from(vec![true; num_rows])
+                            }
+                        }
+                        DataType::Int64 => {
+                            if let Some(arr) = col.as_any().downcast_ref::<Int64Array>() {
+                                if let Ok(val) = filter_value.parse::<i64>() {
+                                    create_comparison_mask_i64(arr, filter_op, val)
+                                } else {
+                                    BooleanArray::from(vec![true; num_rows])
+                                }
+                            } else {
+                                BooleanArray::from(vec![true; num_rows])
+                            }
+                        }
+                        DataType::Utf8 => {
+                            if let Some(arr) = col.as_any().downcast_ref::<StringArray>() {
+                                create_comparison_mask_string(arr, filter_op, &filter_value)
+                            } else {
+                                BooleanArray::from(vec![true; num_rows])
+                            }
+                        }
+                        _ => {
+                            // Unsupported type, pass all rows through
+                            BooleanArray::from(vec![true; num_rows])
+                        }
+                    };
+
+                    Ok(mask)
+                };
+
+                let predicate = ArrowPredicateFn::new(filter_projection, predicate_fn);
+                let row_filter = RowFilter::new(vec![Box::new(predicate)]);
+                builder.with_row_filter(row_filter)
+            } else {
+                debug!(
+                    uri = uri,
+                    filter_column = &filter.column,
+                    "Filter column not found, skipping filter"
+                );
+                builder
             }
         } else {
             builder
@@ -677,5 +932,95 @@ mod tests {
             // Should fall back to all columns since no match
             assert_eq!(batch.num_columns(), 2);
         }
+    }
+
+    #[test]
+    fn test_filter_predicate_parse() {
+        // Test equality
+        let pred = FilterPredicate::parse("status = 'active'").unwrap();
+        assert_eq!(pred.column, "status");
+        assert_eq!(pred.op, FilterOp::Eq);
+        assert_eq!(pred.value, "active");
+
+        // Test greater than or equal
+        let pred = FilterPredicate::parse("id >= 100").unwrap();
+        assert_eq!(pred.column, "id");
+        assert_eq!(pred.op, FilterOp::GtEq);
+        assert_eq!(pred.value, "100");
+
+        // Test less than
+        let pred = FilterPredicate::parse("year < 2020").unwrap();
+        assert_eq!(pred.column, "year");
+        assert_eq!(pred.op, FilterOp::Lt);
+        assert_eq!(pred.value, "2020");
+
+        // Test not equal
+        let pred = FilterPredicate::parse("type != 'test'").unwrap();
+        assert_eq!(pred.column, "type");
+        assert_eq!(pred.op, FilterOp::NotEq);
+        assert_eq!(pred.value, "test");
+
+        // Test with double quotes
+        let pred = FilterPredicate::parse("name = \"John\"").unwrap();
+        assert_eq!(pred.column, "name");
+        assert_eq!(pred.value, "John");
+
+        // Test with spaces
+        let pred = FilterPredicate::parse("  count  >   50  ").unwrap();
+        assert_eq!(pred.column, "count");
+        assert_eq!(pred.op, FilterOp::Gt);
+        assert_eq!(pred.value, "50");
+    }
+
+    #[tokio::test]
+    async fn test_row_filter_int() {
+        let file = create_test_parquet_file(100);
+        let path = file.path().to_str().unwrap();
+
+        // Filter: id >= 50 (should get ~50 rows)
+        let config = ParquetReaderConfig::new("local").with_filter_expr("id >= 50");
+        let reader = ParquetReader {
+            config,
+            store_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+        };
+
+        let mut stream = reader.read_stream(path).await.unwrap();
+
+        let mut total_rows = 0;
+        while let Some(batch_result) = stream.next().await {
+            let batch = batch_result.unwrap();
+            total_rows += batch.num_rows();
+        }
+
+        // With filter id >= 50, we should get 50 rows (ids 50-99)
+        assert_eq!(total_rows, 50);
+    }
+
+    #[tokio::test]
+    async fn test_row_filter_combined_with_projection() {
+        let file = create_test_parquet_file(100);
+        let path = file.path().to_str().unwrap();
+
+        // Filter id >= 90 AND only select "id" column
+        let config = ParquetReaderConfig::new("local")
+            .with_filter_expr("id >= 90")
+            .with_projection(vec!["id".to_string()]);
+        let reader = ParquetReader {
+            config,
+            store_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+        };
+
+        let mut stream = reader.read_stream(path).await.unwrap();
+
+        let mut total_rows = 0;
+        while let Some(batch_result) = stream.next().await {
+            let batch = batch_result.unwrap();
+            total_rows += batch.num_rows();
+            // Should only have 1 column
+            assert_eq!(batch.num_columns(), 1);
+        }
+
+        // With filter id >= 90, we should get 10 rows (ids 90-99)
+        assert_eq!(total_rows, 10);
     }
 }

@@ -105,6 +105,11 @@ pub async fn execute(args: Cli) -> Result<pf_worker::stats::StatsSnapshot> {
         reader_config = reader_config.with_projection(columns.clone());
     }
 
+    // Pass filter expression for Parquet files (predicate pushdown)
+    if let Some(ref filter) = args.filter {
+        reader_config = reader_config.with_filter(filter);
+    }
+
     let reader = FormatDispatchReader::new(reader_config).await?;
 
     // Execute based on input type

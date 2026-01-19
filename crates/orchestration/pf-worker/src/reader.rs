@@ -32,6 +32,10 @@ pub struct ReaderFactoryConfig {
     /// Optional column projection for Parquet files.
     /// If set, only the specified columns will be read.
     pub projection: Option<Vec<String>>,
+
+    /// Optional filter expression for Parquet files.
+    /// Uses predicate pushdown to skip non-matching row groups.
+    pub filter: Option<String>,
 }
 
 impl ReaderFactoryConfig {
@@ -45,6 +49,7 @@ impl ReaderFactoryConfig {
             secret_key: None,
             session_token: None,
             projection: None,
+            filter: None,
         }
     }
 
@@ -81,6 +86,15 @@ impl ReaderFactoryConfig {
         self.projection = Some(columns);
         self
     }
+
+    /// Set a filter expression for Parquet files.
+    ///
+    /// The filter uses predicate pushdown to skip non-matching row groups.
+    /// Example expressions: "id >= 100", "status = 'active'"
+    pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
+        self.filter = Some(filter.into());
+        self
+    }
 }
 
 /// Factory for creating readers based on file format.
@@ -113,6 +127,10 @@ impl ReaderFactory {
 
                 if let Some(ref columns) = self.config.projection {
                     config = config.with_projection(columns.clone());
+                }
+
+                if let Some(ref filter) = self.config.filter {
+                    config = config.with_filter_expr(filter);
                 }
 
                 let reader = ParquetReader::new(config).await?;
