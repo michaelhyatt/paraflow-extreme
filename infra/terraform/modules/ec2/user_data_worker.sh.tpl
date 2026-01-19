@@ -42,6 +42,11 @@ fi
 systemctl start docker
 for i in {1..10}; do docker info >/dev/null 2>&1 && break || sleep 1; done
 
+# Install sysstat for iostat (used in profiling artifact collection)
+if [ "$ENABLE_PROFILING" = "true" ]; then
+    yum install -y sysstat 2>/dev/null || true
+fi
+
 # ECR Auth and pull
 ECR="${ecr_repository}"
 aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin "$ECR"
@@ -233,12 +238,13 @@ WORKER_LOG="/var/log/pf-worker-output.log"
 CONTAINER_START=$(date +%s)
 
 # Build docker run command with optional profiling flags
-DOCKER_ARGS="--rm --name pf-worker -e AWS_REGION=$AWS_REGION"
-WORKER_ARGS="--input sqs --sqs-queue-url ${sqs_queue_url} --destination stats --threads $WORKER_THREADS --batch-size ${batch_size} --sqs-drain --region $AWS_REGION --progress --log-level info"
-
+# Note: We don't use --rm when profiling is enabled so we can collect container logs/stats after exit
 if [ "$ENABLE_PROFILING" = "true" ]; then
-    DOCKER_ARGS="$DOCKER_ARGS -v /var/log:/var/log"
-    WORKER_ARGS="$WORKER_ARGS --metrics-file /var/log/tokio-metrics.jsonl --profile-dir /var/log --profile-interval 60"
+    DOCKER_ARGS="--name pf-worker -e AWS_REGION=$AWS_REGION -v /var/log:/var/log"
+    WORKER_ARGS="--input sqs --sqs-queue-url ${sqs_queue_url} --destination stats --threads $WORKER_THREADS --batch-size ${batch_size} --sqs-drain --region $AWS_REGION --progress --log-level info --metrics-file /var/log/tokio-metrics.jsonl --profile-dir /var/log --profile-interval 60"
+else
+    DOCKER_ARGS="--rm --name pf-worker -e AWS_REGION=$AWS_REGION"
+    WORKER_ARGS="--input sqs --sqs-queue-url ${sqs_queue_url} --destination stats --threads $WORKER_THREADS --batch-size ${batch_size} --sqs-drain --region $AWS_REGION --progress --log-level info"
 fi
 
 docker run $DOCKER_ARGS ${ecr_repository}:${image_tag} $WORKER_ARGS 2>&1 | tee "$WORKER_LOG"
@@ -264,6 +270,8 @@ fi
 # Collect and upload profiling artifacts before instance terminates
 if [ "$ENABLE_PROFILING" = "true" ] && [ -n "$ARTIFACTS_BUCKET" ]; then
     collect_profiling_artifacts
+    # Clean up container now that we've collected artifacts (container was not started with --rm)
+    docker rm pf-worker 2>/dev/null || true
 fi
 
 echo "=== Worker Complete ($${DURATION}s, exit=$EXIT_CODE) ==="
