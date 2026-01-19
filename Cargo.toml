@@ -98,3 +98,19 @@ async-compression = { version = "0.4", features = ["tokio", "gzip", "zstd"] }
 pf-types = { path = "crates/core/pf-types" }
 pf-error = { path = "crates/core/pf-error" }
 pf-traits = { path = "crates/core/pf-traits" }
+
+# === Release Profile Optimizations ===
+# These settings significantly improve runtime performance at the cost of
+# longer compile times. LTO enables cross-crate inlining which is critical
+# for Arrow compute operations and async runtime integration.
+
+[profile.release]
+lto = "thin"          # Good balance of compile time vs optimization
+codegen-units = 1     # Better optimization, single codegen unit
+panic = "abort"       # Smaller binary, no unwinding overhead
+
+# Maximum performance profile for production deployments.
+# Use with: cargo build --profile release-max
+[profile.release-max]
+inherits = "release"
+lto = "fat"           # Full LTO for maximum optimization
