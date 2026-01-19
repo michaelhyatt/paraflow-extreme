@@ -28,6 +28,14 @@ pub struct ReaderFactoryConfig {
 
     /// Optional AWS session token (for temporary credentials)
     pub session_token: Option<String>,
+
+    /// Optional column projection for Parquet files.
+    /// If set, only the specified columns will be read.
+    pub projection: Option<Vec<String>>,
+
+    /// Optional filter expression for Parquet files.
+    /// Uses predicate pushdown to skip non-matching row groups.
+    pub filter: Option<String>,
 }
 
 impl ReaderFactoryConfig {
@@ -40,6 +48,8 @@ impl ReaderFactoryConfig {
             access_key: None,
             secret_key: None,
             session_token: None,
+            projection: None,
+            filter: None,
         }
     }
 
@@ -65,6 +75,24 @@ impl ReaderFactoryConfig {
         self.access_key = Some(access_key.into());
         self.secret_key = Some(secret_key.into());
         self.session_token = session_token;
+        self
+    }
+
+    /// Set column projection for Parquet files.
+    ///
+    /// Only the specified columns will be read from Parquet files,
+    /// reducing I/O and improving performance for wide schemas.
+    pub fn with_projection(mut self, columns: Vec<String>) -> Self {
+        self.projection = Some(columns);
+        self
+    }
+
+    /// Set a filter expression for Parquet files.
+    ///
+    /// The filter uses predicate pushdown to skip non-matching row groups.
+    /// Example expressions: "id >= 100", "status = 'active'"
+    pub fn with_filter(mut self, filter: impl Into<String>) -> Self {
+        self.filter = Some(filter.into());
         self
     }
 }
@@ -95,6 +123,14 @@ impl ReaderFactory {
 
                 if let (Some(ak), Some(sk)) = (&self.config.access_key, &self.config.secret_key) {
                     config = config.with_credentials(ak, sk, self.config.session_token.clone());
+                }
+
+                if let Some(ref columns) = self.config.projection {
+                    config = config.with_projection(columns.clone());
+                }
+
+                if let Some(ref filter) = self.config.filter {
+                    config = config.with_filter_expr(filter);
                 }
 
                 let reader = ParquetReader::new(config).await?;

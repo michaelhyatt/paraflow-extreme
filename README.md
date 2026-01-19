@@ -158,8 +158,11 @@ paraflow-extreme/
 ## Building
 
 ```bash
-# Build all crates
+# Build all crates (standard release)
 cargo build --release
+
+# Build with maximum optimization (fat LTO, recommended for production)
+cargo build --profile release-max
 
 # Run tests
 cargo test
@@ -167,6 +170,15 @@ cargo test
 # Run benchmarks
 cargo bench
 ```
+
+### Release Profiles
+
+| Profile | LTO | Description |
+|---------|-----|-------------|
+| `release` | thin | Good balance of compile time and performance |
+| `release-max` | fat | Maximum optimization for production deployments |
+
+Docker builds use `release-max` by default for optimal runtime performance.
 
 ## Configuration
 
@@ -193,8 +205,13 @@ pf-worker --input sqs --destination stats --threads 8
 |--------|-------------|---------|
 | `--input` | Input source: `stdin` or `sqs` | `stdin` |
 | `--destination` | Output: `stdout` or `stats` | `stdout` |
-| `--threads` | Processing threads | CPU count |
-| `--batch-size` | Records per batch | 10000 |
+| `--threads` | Processing threads | CPU count × 2 |
+| `--batch-size` | Records per batch | 50000 |
+| `--columns` | Comma-separated columns to read (projection) | all |
+| `--filter` | Row filter predicate (e.g., `status=active`) | none |
+| `--sqs-concurrent-polls` | Concurrent SQS receive requests | 2 |
+| `--prefetch-count` | Files to prefetch per thread | 6 |
+| `--prefetch-memory-mb` | Memory budget per thread for prefetch | 200 |
 | `--s3-endpoint` | Custom S3 endpoint | AWS default |
 | `--sqs-endpoint` | Custom SQS endpoint | AWS default |
 

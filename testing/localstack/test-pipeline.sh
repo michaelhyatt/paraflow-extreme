@@ -83,15 +83,15 @@ RESULT=$(./target/release/pf-discoverer \
 echo "$RESULT"
 echo ""
 
-# Check results
-if echo "$RESULT" | grep -q "Files processed: 1"; then
+# Check results (use regex to handle variable spacing in formatted output)
+if echo "$RESULT" | grep -qE "Files processed:\s+1"; then
     echo "   PASS: Pipeline processed 1 file"
 else
     echo "   FAIL: Expected 1 file processed"
     exit 1
 fi
 
-if echo "$RESULT" | grep -q "Records processed: 5"; then
+if echo "$RESULT" | grep -qE "Records processed:\s+5"; then
     echo "   PASS: Processed 5 records"
 else
     echo "   FAIL: Expected 5 records processed"
@@ -125,13 +125,13 @@ DISCOVER_RESULT=$(./target/release/pf-discoverer \
     --s3-endpoint $ENDPOINT \
     --sqs-endpoint $ENDPOINT \
     --region $REGION \
-    --output sqs \
+    --destination sqs \
     --sqs-queue-url $SQS_QUEUE_URL \
     --log-level warn 2>&1)
 
 echo "$DISCOVER_RESULT"
 
-if echo "$DISCOVER_RESULT" | grep -q "Files output:     1"; then
+if echo "$DISCOVER_RESULT" | grep -qE "Files output:\s+1"; then
     echo "   PASS: Discoverer sent 1 file to SQS"
 else
     echo "   FAIL: Expected 1 file output to SQS"
@@ -156,15 +156,15 @@ WORKER_RESULT=$(./target/release/pf-worker \
 echo "$WORKER_RESULT"
 echo ""
 
-# Check worker results
-if echo "$WORKER_RESULT" | grep -q "Files processed: 1"; then
+# Check worker results (use regex to handle variable spacing)
+if echo "$WORKER_RESULT" | grep -qE "Files processed:\s+1"; then
     echo "   PASS: Worker processed 1 file from SQS"
 else
     echo "   FAIL: Expected 1 file processed from SQS"
     exit 1
 fi
 
-if echo "$WORKER_RESULT" | grep -q "Records processed: 5"; then
+if echo "$WORKER_RESULT" | grep -qE "Records processed:\s+5"; then
     echo "   PASS: Processed 5 records from SQS"
 else
     echo "   FAIL: Expected 5 records processed from SQS"

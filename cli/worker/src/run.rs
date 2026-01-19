@@ -56,9 +56,19 @@ pub async fn execute(args: Cli) -> Result<pf_worker::stats::StatsSnapshot> {
             .with_max_memory_bytes(args.prefetch_memory_mb * 1024 * 1024)
     };
 
+    // Auto-detect thread count if set to 0 (default)
+    // Use 2× CPU cores for optimal throughput
+    let thread_count = if args.threads == 0 {
+        std::thread::available_parallelism()
+            .map(|n| n.get() * 2)
+            .unwrap_or(2)
+    } else {
+        args.threads
+    };
+
     // Build worker configuration
     let config = WorkerConfig::new()
-        .with_thread_count(args.threads)
+        .with_thread_count(thread_count)
         .with_batch_size(args.batch_size)
         .with_max_retries(args.max_retries)
         .with_channel_buffer(args.channel_buffer)
@@ -100,6 +110,16 @@ pub async fn execute(args: Cli) -> Result<pf_worker::stats::StatsSnapshot> {
         reader_config = reader_config.with_credentials(access_key, secret_key, session_token);
     }
 
+    // Pass column projection for Parquet files
+    if let Some(ref columns) = args.columns {
+        reader_config = reader_config.with_projection(columns.clone());
+    }
+
+    // Pass filter expression for Parquet files (predicate pushdown)
+    if let Some(ref filter) = args.filter {
+        reader_config = reader_config.with_filter(filter);
+    }
+
     let reader = FormatDispatchReader::new(reader_config).await?;
 
     // Execute based on input type
@@ -128,7 +148,8 @@ pub async fn execute(args: Cli) -> Result<pf_worker::stats::StatsSnapshot> {
             let sqs_config = SqsSourceConfig::new(queue_url)
                 .with_visibility_timeout(args.sqs_visibility_timeout)
                 .with_wait_time(args.sqs_wait_time)
-                .with_drain_mode(args.sqs_drain);
+                .with_drain_mode(args.sqs_drain)
+                .with_concurrent_polls(args.sqs_concurrent_polls);
 
             let source = if let Some(ref endpoint) = args.sqs_endpoint {
                 SqsSource::from_config_with_endpoint(sqs_config, endpoint, &args.region).await?

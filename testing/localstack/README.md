@@ -65,6 +65,32 @@ cargo run -p pf-worker-cli -- \
     --destination stats \
     --s3-endpoint http://localhost:4566 \
     --region us-east-1 \
+    --threads 4 \
+    --sqs-drain
+```
+
+### Test with column projection and filtering:
+
+```bash
+# Read only specific columns (Parquet files)
+cargo run -p pf-discoverer-cli -- \
+    --bucket test-bucket \
+    --prefix data/ \
+    --pattern "*.parquet" \
+    --s3-endpoint http://localhost:4566 \
+  | cargo run -p pf-worker-cli -- \
+      --input stdin \
+      --destination stats \
+      --s3-endpoint http://localhost:4566 \
+      --columns "id,name,timestamp" \
+      --threads 4
+
+# Apply row filter (Parquet files)
+cargo run -p pf-worker-cli -- \
+    --input stdin \
+    --destination stats \
+    --s3-endpoint http://localhost:4566 \
+    --filter "score>90" \
     --threads 4
 ```
 

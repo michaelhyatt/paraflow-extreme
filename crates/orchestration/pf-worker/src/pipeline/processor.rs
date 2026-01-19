@@ -331,8 +331,11 @@ impl Pipeline {
                         "Received batch"
                     );
 
-                    // Add batch to accumulator - flush if threshold exceeded
-                    let accumulator_result = self.accumulator.lock().add(record_batch);
+                    // Add batch to accumulator with pre-computed size (avoids recalculating)
+                    let accumulator_result = self
+                        .accumulator
+                        .lock()
+                        .add_with_size(record_batch, batch_bytes as usize);
 
                     if let Some(batches_to_flush) = accumulator_result.batches_to_flush {
                         trace!(

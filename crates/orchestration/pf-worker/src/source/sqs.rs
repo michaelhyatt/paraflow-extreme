@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use aws_sdk_sqs::Client;
 use aws_sdk_sqs::types::QueueAttributeName;
 use chrono::Utc;
+use futures::future::join_all;
 use pf_error::{PfError, QueueError, Result};
 use pf_traits::{FailureContext, QueueMessage, WorkQueue};
 use serde::{Deserialize, Serialize};
@@ -33,6 +34,12 @@ pub struct SqsSourceConfig {
     /// When enabled, the source will signal completion after receiving
     /// no messages for one full polling cycle.
     pub drain_mode: bool,
+
+    /// Number of concurrent SQS polling requests.
+    /// Higher values improve throughput by keeping more messages ready.
+    /// SQS limits each request to 10 messages, so 2-3 concurrent polls
+    /// can provide 20-30 messages per cycle.
+    pub concurrent_polls: usize,
 }
 
 impl SqsSourceConfig {
@@ -45,6 +52,7 @@ impl SqsSourceConfig {
             visibility_timeout: 300, // 5 minutes
             max_batch_size: 10,
             drain_mode: false,
+            concurrent_polls: 2, // Default to 2 concurrent polls
         }
     }
 
@@ -75,6 +83,15 @@ impl SqsSourceConfig {
     /// Enable drain mode (exit when queue is empty).
     pub fn with_drain_mode(mut self, enabled: bool) -> Self {
         self.drain_mode = enabled;
+        self
+    }
+
+    /// Set the number of concurrent polling requests.
+    ///
+    /// Higher values improve throughput by fetching more messages per cycle.
+    /// Recommended: 2-4 for high-throughput workloads.
+    pub fn with_concurrent_polls(mut self, count: usize) -> Self {
+        self.concurrent_polls = count.max(1);
         self
     }
 }
@@ -201,25 +218,57 @@ impl WorkQueue for SqsSource {
         }
 
         let batch_size = (max as i32).min(self.config.max_batch_size);
+        let concurrent_polls = self.config.concurrent_polls;
 
-        let response = self
-            .client
-            .receive_message()
-            .queue_url(&self.config.queue_url)
-            .max_number_of_messages(batch_size)
-            .wait_time_seconds(self.config.wait_time_seconds)
-            .visibility_timeout(self.config.visibility_timeout)
-            .message_system_attribute_names(
-                aws_sdk_sqs::types::MessageSystemAttributeName::ApproximateReceiveCount,
-            )
-            .send()
-            .await
-            .map_err(|e| {
-                PfError::Queue(QueueError::Receive(format!("SQS receive failed: {}", e)))
-            })?;
+        // Launch concurrent SQS receive requests
+        let poll_futures: Vec<_> = (0..concurrent_polls)
+            .map(|_| {
+                self.client
+                    .receive_message()
+                    .queue_url(&self.config.queue_url)
+                    .max_number_of_messages(batch_size)
+                    .wait_time_seconds(self.config.wait_time_seconds)
+                    .visibility_timeout(self.config.visibility_timeout)
+                    .message_system_attribute_names(
+                        aws_sdk_sqs::types::MessageSystemAttributeName::ApproximateReceiveCount,
+                    )
+                    .send()
+            })
+            .collect();
 
-        let sqs_messages = response.messages.unwrap_or_default();
-        debug!("Received {} messages from SQS", sqs_messages.len());
+        // Wait for all polls to complete
+        let results = join_all(poll_futures).await;
+
+        // Combine messages from all successful polls
+        let mut sqs_messages = Vec::new();
+        let mut had_error = false;
+        for result in results {
+            match result {
+                Ok(response) => {
+                    if let Some(msgs) = response.messages {
+                        sqs_messages.extend(msgs);
+                    }
+                }
+                Err(e) => {
+                    // Log but don't fail if some polls succeed
+                    warn!("One SQS poll failed: {}", e);
+                    had_error = true;
+                }
+            }
+        }
+
+        // If all polls failed, return error
+        if sqs_messages.is_empty() && had_error {
+            return Err(PfError::Queue(QueueError::Receive(
+                "All SQS receive requests failed".to_string(),
+            )));
+        }
+
+        debug!(
+            "Received {} messages from {} concurrent SQS polls",
+            sqs_messages.len(),
+            concurrent_polls
+        );
 
         // Handle drain mode: exit when queue is truly empty
         if sqs_messages.is_empty() {
@@ -423,6 +472,7 @@ mod tests {
         assert_eq!(config.wait_time_seconds, 20);
         assert_eq!(config.visibility_timeout, 300);
         assert_eq!(config.max_batch_size, 10);
+        assert_eq!(config.concurrent_polls, 2);
         assert!(config.dlq_url.is_none());
     }
 
@@ -451,5 +501,15 @@ mod tests {
 
         assert_eq!(config.wait_time_seconds, 20);
         assert_eq!(config.max_batch_size, 10);
+    }
+
+    #[test]
+    fn test_sqs_source_config_concurrent_polls() {
+        let config = SqsSourceConfig::new("url").with_concurrent_polls(4);
+        assert_eq!(config.concurrent_polls, 4);
+
+        // Test minimum of 1
+        let config = SqsSourceConfig::new("url").with_concurrent_polls(0);
+        assert_eq!(config.concurrent_polls, 1);
     }
 }

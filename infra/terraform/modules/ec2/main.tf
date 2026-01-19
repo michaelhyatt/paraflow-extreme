@@ -298,6 +298,9 @@ resource "aws_instance" "worker" {
     batch_size                 = var.batch_size
     prefetch_count             = var.prefetch_count
     prefetch_memory_mb         = var.prefetch_memory_mb
+    columns                    = var.columns
+    row_filter                 = var.row_filter
+    sqs_concurrent_polls       = var.sqs_concurrent_polls
     log_group_name             = var.log_group_name
     job_id                     = var.job_id
     enable_detailed_monitoring = var.enable_detailed_monitoring
