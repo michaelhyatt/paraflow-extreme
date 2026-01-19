@@ -16,9 +16,10 @@ COPY crates/ crates/
 COPY cli/ cli/
 COPY tests/ tests/
 
-# Build release binaries with tokio_unstable for full runtime metrics
+# Build optimized release binaries with tokio_unstable for full runtime metrics
+# Uses release-max profile for maximum optimization (fat LTO, single codegen unit)
 ENV RUSTFLAGS="--cfg tokio_unstable"
-RUN cargo build --release -p pf-discoverer-cli -p pf-worker-cli
+RUN cargo build --profile release-max -p pf-discoverer-cli -p pf-worker-cli
 
 # Stage 2: Discoverer target
 FROM debian:bookworm-slim AS discoverer
@@ -27,7 +28,7 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/release/pf-discoverer /usr/local/bin/
+COPY --from=builder /app/target/release-max/pf-discoverer /usr/local/bin/
 
 ENV RUST_BACKTRACE=1
 EXPOSE 9090
@@ -40,7 +41,7 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/release/pf-worker /usr/local/bin/
+COPY --from=builder /app/target/release-max/pf-worker /usr/local/bin/
 
 ENV RUST_BACKTRACE=1
 EXPOSE 9090
@@ -53,8 +54,8 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/release/pf-discoverer /usr/local/bin/
-COPY --from=builder /app/target/release/pf-worker /usr/local/bin/
+COPY --from=builder /app/target/release-max/pf-discoverer /usr/local/bin/
+COPY --from=builder /app/target/release-max/pf-worker /usr/local/bin/
 
 ENV RUST_BACKTRACE=1
 

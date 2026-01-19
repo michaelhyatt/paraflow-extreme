@@ -145,6 +145,24 @@ variable "prefetch_memory_mb" {
   default     = 200
 }
 
+variable "columns" {
+  description = "Comma-separated list of columns to read from Parquet files (empty = all columns)"
+  type        = string
+  default     = ""
+}
+
+variable "row_filter" {
+  description = "Row filter predicate for Parquet files (e.g., 'status=active' or 'age>18')"
+  type        = string
+  default     = ""
+}
+
+variable "sqs_concurrent_polls" {
+  description = "Number of concurrent SQS receive requests per poll cycle"
+  type        = number
+  default     = 2
+}
+
 # Logging
 variable "log_group_name" {
   description = "CloudWatch log group name"

@@ -101,8 +101,13 @@ Copy `.env.example` to `.env` and customize:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `WORKER_REPLICAS` | Number of worker containers | `3` |
-| `WORKER_THREADS` | Processing threads per worker | `4` |
-| `WORKER_BATCH_SIZE` | Records per batch | `10000` |
+| `WORKER_THREADS` | Processing threads per worker | `0` (auto: 2× CPU) |
+| `WORKER_BATCH_SIZE` | Records per batch | `50000` |
+| `WORKER_COLUMNS` | Column projection (comma-separated) | (all columns) |
+| `WORKER_FILTER` | Row filter predicate (e.g., `status=active`) | (none) |
+| `WORKER_SQS_CONCURRENT_POLLS` | Concurrent SQS receive requests | `2` |
+| `WORKER_PREFETCH_COUNT` | Files to prefetch per thread | `6` |
+| `WORKER_PREFETCH_MEMORY_MB` | Memory budget per thread for prefetch | `200` |
 | `S3_BUCKET` | S3 bucket name | `test-bucket` |
 | `S3_PREFIX` | S3 prefix filter | (empty) |
 | `DISCOVERY_PATTERN` | Glob pattern for files | `*` |

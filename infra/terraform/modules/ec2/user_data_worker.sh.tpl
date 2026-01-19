@@ -174,12 +174,25 @@ CONTAINER_START=$(date +%s)
 
 # Build docker run command with optional profiling flags
 # Note: We don't use --rm when profiling is enabled so we can collect container logs/stats after exit
+
+# Build optional CLI args for column projection, row filtering, and concurrent polls
+OPTIONAL_ARGS=""
+if [ -n "${columns}" ]; then
+    OPTIONAL_ARGS="$OPTIONAL_ARGS --columns ${columns}"
+fi
+if [ -n "${row_filter}" ]; then
+    OPTIONAL_ARGS="$OPTIONAL_ARGS --filter '${row_filter}'"
+fi
+if [ "${sqs_concurrent_polls}" -gt 0 ]; then
+    OPTIONAL_ARGS="$OPTIONAL_ARGS --sqs-concurrent-polls ${sqs_concurrent_polls}"
+fi
+
 if [ "$ENABLE_PROFILING" = "true" ]; then
     DOCKER_ARGS="--name pf-worker -e AWS_REGION=$AWS_REGION -v /var/log:/var/log"
-    WORKER_ARGS="--input sqs --sqs-queue-url ${sqs_queue_url} --destination stats --threads $WORKER_THREADS --batch-size ${batch_size} --prefetch-count ${prefetch_count} --prefetch-memory-mb ${prefetch_memory_mb} --sqs-drain --region $AWS_REGION --progress --log-level info --metrics-file /var/log/tokio-metrics.jsonl --profile-dir /var/log --profile-interval 60"
+    WORKER_ARGS="--input sqs --sqs-queue-url ${sqs_queue_url} --destination stats --threads $WORKER_THREADS --batch-size ${batch_size} --prefetch-count ${prefetch_count} --prefetch-memory-mb ${prefetch_memory_mb}$OPTIONAL_ARGS --sqs-drain --region $AWS_REGION --progress --log-level info --metrics-file /var/log/tokio-metrics.jsonl --profile-dir /var/log --profile-interval 60"
 else
     DOCKER_ARGS="--rm --name pf-worker -e AWS_REGION=$AWS_REGION"
-    WORKER_ARGS="--input sqs --sqs-queue-url ${sqs_queue_url} --destination stats --threads $WORKER_THREADS --batch-size ${batch_size} --prefetch-count ${prefetch_count} --prefetch-memory-mb ${prefetch_memory_mb} --sqs-drain --region $AWS_REGION --progress --log-level info"
+    WORKER_ARGS="--input sqs --sqs-queue-url ${sqs_queue_url} --destination stats --threads $WORKER_THREADS --batch-size ${batch_size} --prefetch-count ${prefetch_count} --prefetch-memory-mb ${prefetch_memory_mb}$OPTIONAL_ARGS --sqs-drain --region $AWS_REGION --progress --log-level info"
 fi
 
 docker run $DOCKER_ARGS ${ecr_repository}:${image_tag} $WORKER_ARGS 2>&1 | tee "$WORKER_LOG"
