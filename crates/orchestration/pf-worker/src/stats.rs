@@ -5,9 +5,54 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Cache line size on most modern CPUs (64 bytes).
+const CACHE_LINE_SIZE: usize = 64;
+
+/// A cache-line-padded atomic counter to prevent false sharing.
+///
+/// When multiple threads update different AtomicU64 values that happen to
+/// share a cache line, CPU cache coherency protocols cause performance
+/// degradation ("false sharing"). This wrapper ensures each counter occupies
+/// its own cache line.
+#[repr(C, align(64))]
+#[derive(Debug)]
+struct PaddedAtomicU64 {
+    value: AtomicU64,
+    // Padding to fill the rest of the cache line
+    _padding: [u8; CACHE_LINE_SIZE - std::mem::size_of::<AtomicU64>()],
+}
+
+impl Default for PaddedAtomicU64 {
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
+impl PaddedAtomicU64 {
+    fn new(val: u64) -> Self {
+        Self {
+            value: AtomicU64::new(val),
+            _padding: [0; CACHE_LINE_SIZE - std::mem::size_of::<AtomicU64>()],
+        }
+    }
+
+    #[inline]
+    fn load(&self, ordering: Ordering) -> u64 {
+        self.value.load(ordering)
+    }
+
+    #[inline]
+    fn fetch_add(&self, val: u64, ordering: Ordering) -> u64 {
+        self.value.fetch_add(val, ordering)
+    }
+}
+
 /// Statistics collected during a worker run.
 ///
-/// Uses atomic counters for thread-safe updates from multiple processing threads.
+/// Uses cache-line-padded atomic counters for thread-safe updates from multiple
+/// processing threads without false sharing. Each counter occupies its own
+/// cache line (64 bytes) to prevent CPU cache coherency traffic when multiple
+/// threads update different counters concurrently.
 #[derive(Debug, Default)]
 pub struct WorkerStats {
     /// When processing started
@@ -22,32 +67,35 @@ pub struct WorkerStats {
     /// When the last file finished processing (for active duration calculation)
     last_file_at: Mutex<Option<DateTime<Utc>>>,
 
+    // === Padded atomic counters to prevent false sharing ===
+    // Each counter is on its own cache line (64 bytes)
+
     /// Total number of files processed successfully
-    files_processed: AtomicU64,
+    files_processed: PaddedAtomicU64,
 
     /// Number of files that failed
-    files_failed: AtomicU64,
+    files_failed: PaddedAtomicU64,
 
     /// Total number of records processed
-    records_processed: AtomicU64,
+    records_processed: PaddedAtomicU64,
 
     /// Number of records that failed
-    records_failed: AtomicU64,
+    records_failed: PaddedAtomicU64,
 
     /// Total bytes read from source files
-    bytes_read: AtomicU64,
+    bytes_read: PaddedAtomicU64,
 
     /// Total bytes written to destination
-    bytes_written: AtomicU64,
+    bytes_written: PaddedAtomicU64,
 
     /// Number of batches processed
-    batches_processed: AtomicU64,
+    batches_processed: PaddedAtomicU64,
 
     /// Number of transient errors encountered
-    transient_errors: AtomicU64,
+    transient_errors: PaddedAtomicU64,
 
     /// Number of permanent errors encountered
-    permanent_errors: AtomicU64,
+    permanent_errors: PaddedAtomicU64,
 }
 
 impl WorkerStats {
@@ -457,5 +505,20 @@ mod tests {
         assert!(snapshot.last_file_at.is_some());
         assert!(snapshot.active_duration().is_some());
         assert!(snapshot.active_duration_secs().unwrap() >= 0.01);
+    }
+
+    #[test]
+    fn test_padded_atomic_alignment() {
+        // Verify that PaddedAtomicU64 is properly aligned to cache line boundaries
+        assert_eq!(
+            std::mem::align_of::<super::PaddedAtomicU64>(),
+            64,
+            "PaddedAtomicU64 should be 64-byte aligned"
+        );
+        assert_eq!(
+            std::mem::size_of::<super::PaddedAtomicU64>(),
+            64,
+            "PaddedAtomicU64 should be exactly 64 bytes"
+        );
     }
 }
