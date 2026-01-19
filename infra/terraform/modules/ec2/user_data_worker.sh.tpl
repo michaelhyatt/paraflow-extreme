@@ -268,7 +268,7 @@ if [ "$ACTIVE_DURATION_INT" = "0" ] || [ -z "$ACTIVE_DURATION_INT" ]; then
     ACTIVE_DURATION_INT=$TOTAL_DURATION
 fi
 
-echo "Metrics: files=$FILES records=$RECORDS throughput=$REC_SEC rec/s $MB_SEC MB/s active_duration=${ACTIVE_DURATION_INT}s total_duration=${TOTAL_DURATION}s"
+echo "Metrics: files=$FILES records=$RECORDS throughput=$REC_SEC rec/s $MB_SEC MB/s active_duration=$${ACTIVE_DURATION_INT}s total_duration=$${TOTAL_DURATION}s"
 
 # Benchmark metrics - use active_duration for accurate throughput reporting
 if [ "$BENCHMARK_MODE" = "true" ]; then
@@ -284,5 +284,5 @@ if [ "$ENABLE_PROFILING" = "true" ] && [ -n "$ARTIFACTS_BUCKET" ]; then
     docker rm pf-worker 2>/dev/null || true
 fi
 
-echo "=== Worker Complete (active=${ACTIVE_DURATION_INT}s, total=${TOTAL_DURATION}s, exit=$EXIT_CODE) ==="
+echo "=== Worker Complete (active=$${ACTIVE_DURATION_INT}s, total=$${TOTAL_DURATION}s, exit=$EXIT_CODE) ==="
 exit $EXIT_CODE
