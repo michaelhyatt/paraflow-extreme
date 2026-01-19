@@ -250,7 +250,7 @@ fi
 docker run $DOCKER_ARGS ${ecr_repository}:${image_tag} $WORKER_ARGS 2>&1 | tee "$WORKER_LOG"
 
 EXIT_CODE=$${PIPESTATUS[0]}
-DURATION=$(($(date +%s) - CONTAINER_START))
+TOTAL_DURATION=$(($(date +%s) - CONTAINER_START))
 
 # Parse metrics (handle comma-formatted numbers like "4,069")
 FILES=$(grep "Files processed:" "$WORKER_LOG" 2>/dev/null | grep -oP '[\d,]+' | head -1 | tr -d ',' || echo "0")
@@ -258,12 +258,22 @@ RECORDS=$(grep "Records processed:" "$WORKER_LOG" 2>/dev/null | grep -oP '[\d,]+
 REC_SEC=$(grep "records/sec" "$WORKER_LOG" 2>/dev/null | grep -oP '[\d,]+' | head -1 | tr -d ',' || echo "0")
 MB_SEC=$(grep "MB/s read" "$WORKER_LOG" 2>/dev/null | grep -oP '[\d.]+' | head -1 || echo "0")
 
-echo "Metrics: files=$FILES records=$RECORDS throughput=$REC_SEC rec/s $MB_SEC MB/s"
+# Parse active duration (actual file processing time, excludes startup/drain overhead)
+# Format: "Active duration:    67.23s"
+ACTIVE_DURATION=$(grep "Active duration:" "$WORKER_LOG" 2>/dev/null | grep -oP '[\d.]+' | head -1 || echo "0")
+# Convert to integer seconds for JSON (round up to be conservative)
+ACTIVE_DURATION_INT=$(echo "$ACTIVE_DURATION" | awk '{printf "%.0f", $1 + 0.5}')
+# Fall back to total duration if active duration not available
+if [ "$ACTIVE_DURATION_INT" = "0" ] || [ -z "$ACTIVE_DURATION_INT" ]; then
+    ACTIVE_DURATION_INT=$TOTAL_DURATION
+fi
 
-# Benchmark metrics
+echo "Metrics: files=$FILES records=$RECORDS throughput=$REC_SEC rec/s $MB_SEC MB/s active_duration=${ACTIVE_DURATION_INT}s total_duration=${TOTAL_DURATION}s"
+
+# Benchmark metrics - use active_duration for accurate throughput reporting
 if [ "$BENCHMARK_MODE" = "true" ]; then
     cat > /var/log/benchmark-metrics.json <<EOF
-{"component":"$COMPONENT","job_id":"$JOB_ID","instance_type":"$(curl -s http://169.254.169.254/latest/meta-data/instance-type)","duration":$DURATION,"status":"$([ $EXIT_CODE -eq 0 ] && echo SUCCESS || echo FAILED)","throughput":{"files":$FILES,"records":$RECORDS,"rec_per_sec":$REC_SEC,"mb_per_sec":$MB_SEC}}
+{"component":"$COMPONENT","job_id":"$JOB_ID","instance_type":"$(curl -s http://169.254.169.254/latest/meta-data/instance-type)","duration":$ACTIVE_DURATION_INT,"total_duration":$TOTAL_DURATION,"status":"$([ $EXIT_CODE -eq 0 ] && echo SUCCESS || echo FAILED)","throughput":{"files":$FILES,"records":$RECORDS,"rec_per_sec":$REC_SEC,"mb_per_sec":$MB_SEC}}
 EOF
 fi
 
@@ -274,5 +284,5 @@ if [ "$ENABLE_PROFILING" = "true" ] && [ -n "$ARTIFACTS_BUCKET" ]; then
     docker rm pf-worker 2>/dev/null || true
 fi
 
-echo "=== Worker Complete ($${DURATION}s, exit=$EXIT_CODE) ==="
+echo "=== Worker Complete (active=${ACTIVE_DURATION_INT}s, total=${TOTAL_DURATION}s, exit=$EXIT_CODE) ==="
 exit $EXIT_CODE

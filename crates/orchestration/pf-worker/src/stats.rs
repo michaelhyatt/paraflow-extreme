@@ -1,6 +1,7 @@
 //! Statistics for worker runs.
 
 use chrono::{DateTime, Duration, Utc};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -14,6 +15,12 @@ pub struct WorkerStats {
 
     /// When processing completed
     completed_at: Option<DateTime<Utc>>,
+
+    /// When the first file started processing (for active duration calculation)
+    first_file_at: Mutex<Option<DateTime<Utc>>>,
+
+    /// When the last file finished processing (for active duration calculation)
+    last_file_at: Mutex<Option<DateTime<Utc>>>,
 
     /// Total number of files processed successfully
     files_processed: AtomicU64,
@@ -59,6 +66,19 @@ impl WorkerStats {
 
     /// Record a successfully processed file.
     pub fn record_file_success(&self, records: u64, bytes_read: u64, bytes_written: u64) {
+        let now = Utc::now();
+
+        // Track first file timestamp (only set once)
+        {
+            let mut first = self.first_file_at.lock();
+            if first.is_none() {
+                *first = Some(now);
+            }
+        }
+
+        // Always update last file timestamp
+        *self.last_file_at.lock() = Some(now);
+
         self.files_processed.fetch_add(1, Ordering::Relaxed);
         self.records_processed.fetch_add(records, Ordering::Relaxed);
         self.bytes_read.fetch_add(bytes_read, Ordering::Relaxed);
@@ -106,13 +126,37 @@ impl WorkerStats {
         self.permanent_errors.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Get the duration of the worker run.
+    /// Get the total duration of the worker run (includes startup and drain time).
     pub fn duration(&self) -> Option<Duration> {
         match (self.started_at, self.completed_at) {
             (Some(start), Some(end)) => Some(end - start),
             (Some(start), None) => Some(Utc::now() - start),
             _ => None,
         }
+    }
+
+    /// Get the active processing duration (first file to last file).
+    ///
+    /// This excludes startup overhead (SQS connection, waiting for first message)
+    /// and drain time (waiting for visibility timeout). Use this for accurate
+    /// throughput calculations.
+    pub fn active_duration(&self) -> Option<Duration> {
+        let first = *self.first_file_at.lock();
+        let last = *self.last_file_at.lock();
+        match (first, last) {
+            (Some(f), Some(l)) => Some(l - f),
+            _ => None,
+        }
+    }
+
+    /// Get the first file processing timestamp.
+    pub fn first_file_at(&self) -> Option<DateTime<Utc>> {
+        *self.first_file_at.lock()
+    }
+
+    /// Get the last file processing timestamp.
+    pub fn last_file_at(&self) -> Option<DateTime<Utc>> {
+        *self.last_file_at.lock()
     }
 
     /// Get the number of files processed.
@@ -160,9 +204,9 @@ impl WorkerStats {
         self.permanent_errors.load(Ordering::Relaxed)
     }
 
-    /// Calculate the throughput in files per second.
+    /// Calculate the throughput in files per second using active processing duration.
     pub fn files_per_second(&self) -> Option<f64> {
-        self.duration().map(|d| {
+        self.active_duration().map(|d| {
             let secs = d.num_milliseconds() as f64 / 1000.0;
             if secs > 0.0 {
                 self.files_processed() as f64 / secs
@@ -172,9 +216,9 @@ impl WorkerStats {
         })
     }
 
-    /// Calculate the throughput in records per second.
+    /// Calculate the throughput in records per second using active processing duration.
     pub fn records_per_second(&self) -> Option<f64> {
-        self.duration().map(|d| {
+        self.active_duration().map(|d| {
             let secs = d.num_milliseconds() as f64 / 1000.0;
             if secs > 0.0 {
                 self.records_processed() as f64 / secs
@@ -184,9 +228,9 @@ impl WorkerStats {
         })
     }
 
-    /// Calculate the throughput in MB per second (read).
+    /// Calculate the throughput in MB per second (read) using active processing duration.
     pub fn read_throughput_mbps(&self) -> Option<f64> {
-        self.duration().map(|d| {
+        self.active_duration().map(|d| {
             let secs = d.num_milliseconds() as f64 / 1000.0;
             if secs > 0.0 {
                 (self.bytes_read() as f64 / 1_000_000.0) / secs
@@ -196,9 +240,9 @@ impl WorkerStats {
         })
     }
 
-    /// Calculate the throughput in MB per second (written).
+    /// Calculate the throughput in MB per second (written) using active processing duration.
     pub fn write_throughput_mbps(&self) -> Option<f64> {
-        self.duration().map(|d| {
+        self.active_duration().map(|d| {
             let secs = d.num_milliseconds() as f64 / 1000.0;
             if secs > 0.0 {
                 (self.bytes_written() as f64 / 1_000_000.0) / secs
@@ -213,6 +257,8 @@ impl WorkerStats {
         StatsSnapshot {
             started_at: self.started_at,
             completed_at: self.completed_at,
+            first_file_at: self.first_file_at(),
+            last_file_at: self.last_file_at(),
             files_processed: self.files_processed(),
             files_failed: self.files_failed(),
             records_processed: self.records_processed(),
@@ -231,6 +277,10 @@ impl WorkerStats {
 pub struct StatsSnapshot {
     pub started_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
+    /// When the first file started processing
+    pub first_file_at: Option<DateTime<Utc>>,
+    /// When the last file finished processing
+    pub last_file_at: Option<DateTime<Utc>>,
     pub files_processed: u64,
     pub files_failed: u64,
     pub records_processed: u64,
@@ -243,7 +293,7 @@ pub struct StatsSnapshot {
 }
 
 impl StatsSnapshot {
-    /// Get the duration of the worker run.
+    /// Get the total duration of the worker run (includes startup and drain time).
     pub fn duration(&self) -> Option<Duration> {
         match (self.started_at, self.completed_at) {
             (Some(start), Some(end)) => Some(end - start),
@@ -251,9 +301,26 @@ impl StatsSnapshot {
         }
     }
 
-    /// Calculate the throughput in MB per second (read).
+    /// Get the active processing duration (first file to last file).
+    ///
+    /// This excludes startup overhead and drain time. Use this for accurate
+    /// throughput calculations.
+    pub fn active_duration(&self) -> Option<Duration> {
+        match (self.first_file_at, self.last_file_at) {
+            (Some(first), Some(last)) => Some(last - first),
+            _ => None,
+        }
+    }
+
+    /// Get the active processing duration in seconds.
+    pub fn active_duration_secs(&self) -> Option<f64> {
+        self.active_duration()
+            .map(|d| d.num_milliseconds() as f64 / 1000.0)
+    }
+
+    /// Calculate the throughput in MB per second (read) using active duration.
     pub fn read_throughput_mbps(&self) -> Option<f64> {
-        self.duration().map(|d| {
+        self.active_duration().map(|d| {
             let secs = d.num_milliseconds() as f64 / 1000.0;
             if secs > 0.0 {
                 (self.bytes_read as f64 / 1_000_000.0) / secs
@@ -342,5 +409,53 @@ mod tests {
 
         assert_eq!(stats.files_processed(), 1000);
         assert_eq!(stats.records_processed(), 10000);
+    }
+
+    #[test]
+    fn test_active_duration() {
+        let stats = WorkerStats::new();
+
+        // No files processed yet - active_duration should be None
+        assert!(stats.active_duration().is_none());
+        assert!(stats.first_file_at().is_none());
+        assert!(stats.last_file_at().is_none());
+
+        // Process first file
+        stats.record_file_success(100, 1024, 2048);
+        let first = stats.first_file_at().unwrap();
+        let last1 = stats.last_file_at().unwrap();
+
+        // First and last should be the same after one file
+        assert_eq!(first, last1);
+
+        // Small delay to ensure timestamps differ
+        sleep(StdDuration::from_millis(10));
+
+        // Process second file
+        stats.record_file_success(200, 2048, 4096);
+        let last2 = stats.last_file_at().unwrap();
+
+        // First should not change, last should be updated
+        assert_eq!(stats.first_file_at().unwrap(), first);
+        assert!(last2 > first);
+
+        // Active duration should be positive
+        let active = stats.active_duration().unwrap();
+        assert!(active.num_milliseconds() >= 10);
+    }
+
+    #[test]
+    fn test_snapshot_includes_active_duration() {
+        let stats = WorkerStats::new();
+        stats.record_file_success(100, 1024, 2048);
+        sleep(StdDuration::from_millis(10));
+        stats.record_file_success(200, 2048, 4096);
+
+        let snapshot = stats.snapshot();
+
+        assert!(snapshot.first_file_at.is_some());
+        assert!(snapshot.last_file_at.is_some());
+        assert!(snapshot.active_duration().is_some());
+        assert!(snapshot.active_duration_secs().unwrap() >= 0.01);
     }
 }

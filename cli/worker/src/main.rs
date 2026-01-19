@@ -73,28 +73,37 @@ async fn main() -> anyhow::Result<()> {
         format_bytes(stats.bytes_written)
     );
 
-    if let Some(duration) = stats.duration() {
-        let secs = duration.num_milliseconds() as f64 / 1000.0;
-        eprintln!("  Duration:           {:.2}s", secs);
+    // Report active duration (actual file processing time) for accurate throughput
+    if let Some(active_secs) = stats.active_duration_secs() {
+        eprintln!("  Active duration:    {:.2}s", active_secs);
 
-        if secs > 0.0 && stats.files_processed > 0 {
+        if active_secs > 0.0 && stats.files_processed > 0 {
             eprintln!(
                 "  Throughput:         {:.1} files/sec",
-                stats.files_processed as f64 / secs
+                stats.files_processed as f64 / active_secs
             );
         }
 
-        if secs > 0.0 && stats.records_processed > 0 {
+        if active_secs > 0.0 && stats.records_processed > 0 {
             eprintln!(
                 "                      {} records/sec",
-                format_number((stats.records_processed as f64 / secs) as u64)
+                format_number((stats.records_processed as f64 / active_secs) as u64)
             );
         }
 
-        if secs > 0.0 && stats.bytes_read > 0 {
-            let throughput_mbps = (stats.bytes_read as f64 / 1_000_000.0) / secs;
+        if active_secs > 0.0 && stats.bytes_read > 0 {
+            let throughput_mbps = (stats.bytes_read as f64 / 1_000_000.0) / active_secs;
             eprintln!("                      {:.1} MB/s read", throughput_mbps);
         }
+    }
+
+    // Also report total duration for reference
+    if let Some(duration) = stats.duration() {
+        let total_secs = duration.num_milliseconds() as f64 / 1000.0;
+        eprintln!(
+            "  Total duration:     {:.2}s (includes startup/drain)",
+            total_secs
+        );
     }
 
     if stats.transient_errors > 0 || stats.permanent_errors > 0 {
