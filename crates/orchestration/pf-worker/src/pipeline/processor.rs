@@ -173,6 +173,13 @@ impl Pipeline {
         &self.reader
     }
 
+    /// Get a reference to the global worker stats.
+    ///
+    /// This is used to report pending prefetch items for drain mode coordination.
+    pub fn global_stats(&self) -> &Arc<WorkerStats> {
+        &self.global_stats
+    }
+
     /// Process a single work item.
     pub async fn process(&self, message: &QueueMessage) -> ProcessingResult {
         let start = Instant::now();

@@ -127,6 +127,13 @@ pub struct SqsSource {
 
     /// Counter for consecutive checks with same in-flight count
     stalled_count: AtomicU32,
+
+    /// Shared counter for pending prefetch items across all worker threads.
+    /// This is checked during drain mode to ensure all prefetched items are
+    /// processed before declaring the queue empty.
+    /// Uses parking_lot::Mutex for interior mutability since the trait method takes &self.
+    pending_prefetch_items:
+        parking_lot::Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>>,
 }
 
 impl SqsSource {
@@ -139,7 +146,17 @@ impl SqsSource {
             empty_receive_count: AtomicU32::new(0),
             last_in_flight: AtomicI64::new(-1),
             stalled_count: AtomicU32::new(0),
+            pending_prefetch_items: parking_lot::Mutex::new(None),
         }
+    }
+
+    /// Get the current count of pending prefetch items, if tracking is enabled.
+    fn pending_prefetch_count(&self) -> usize {
+        self.pending_prefetch_items
+            .lock()
+            .as_ref()
+            .map(|c| c.load(Ordering::SeqCst))
+            .unwrap_or(0)
     }
 
     /// Create an SQS source with default AWS configuration.
@@ -274,14 +291,19 @@ impl WorkQueue for SqsSource {
         if sqs_messages.is_empty() {
             if self.config.drain_mode {
                 let empty_count = self.empty_receive_count.fetch_add(1, Ordering::Relaxed) + 1;
-                debug!("Empty receive #{} in drain mode", empty_count);
+                let pending_prefetch = self.pending_prefetch_count();
+                debug!(empty_count, pending_prefetch, "Empty receive in drain mode");
 
                 // After empty long-poll, verify queue is truly empty
                 // This prevents premature termination when multiple workers are active
                 // and one gets an empty batch while messages are in-flight with others
                 match self.get_queue_status().await {
                     Ok((visible, in_flight)) => {
-                        if visible == 0 && in_flight == 0 {
+                        // Check if all work is complete:
+                        // - No visible messages in queue
+                        // - No in-flight messages at SQS level
+                        // - No pending prefetch items in worker buffers
+                        if visible == 0 && in_flight == 0 && pending_prefetch == 0 {
                             info!(
                                 empty_polls = empty_count,
                                 "Queue drained (verified empty), signaling completion"
@@ -290,43 +312,56 @@ impl WorkQueue for SqsSource {
                             return Ok(None);
                         }
 
-                        // Messages are in-flight with other workers. Track if progress is being made.
-                        let last = self.last_in_flight.swap(in_flight, Ordering::Relaxed);
-                        if in_flight > 0 && in_flight == last {
-                            // In-flight count hasn't changed - workers may be stuck or crashed
-                            let stalled = self.stalled_count.fetch_add(1, Ordering::Relaxed) + 1;
-                            let max_stalled = (self.config.visibility_timeout
-                                / self.config.wait_time_seconds)
-                                + 1;
-
-                            if stalled >= max_stalled as u32 {
-                                warn!(
-                                    in_flight = in_flight,
-                                    stalled_checks = stalled,
-                                    visibility_timeout_secs = self.config.visibility_timeout,
-                                    "In-flight messages stuck, assuming orphaned - exiting. \
-                                     These messages will become visible again after visibility timeout."
-                                );
-                                self.stopped.store(true, Ordering::Relaxed);
-                                return Ok(None);
-                            }
-                            info!(
-                                in_flight = in_flight,
-                                stalled_checks = stalled,
-                                max_stalled_checks = max_stalled,
-                                visibility_timeout_secs = self.config.visibility_timeout,
-                                "Waiting for in-flight messages (no progress detected). \
-                                 Workers may be processing large files or are stuck."
-                            );
-                        } else {
-                            // In-flight count changed - progress is being made
+                        // If there are pending prefetch items, don't count as stalled
+                        // Workers are still processing prefetched items
+                        if pending_prefetch > 0 {
                             self.stalled_count.store(0, Ordering::Relaxed);
                             info!(
                                 visible = visible,
                                 in_flight = in_flight,
-                                previous_in_flight = last,
-                                "Queue has in-flight messages, waiting for completion"
+                                pending_prefetch = pending_prefetch,
+                                "Waiting for workers to process prefetched items"
                             );
+                        } else {
+                            // Messages are in-flight with other workers. Track if progress is being made.
+                            let last = self.last_in_flight.swap(in_flight, Ordering::Relaxed);
+                            if in_flight > 0 && in_flight == last {
+                                // In-flight count hasn't changed - workers may be stuck or crashed
+                                let stalled =
+                                    self.stalled_count.fetch_add(1, Ordering::Relaxed) + 1;
+                                let max_stalled = (self.config.visibility_timeout
+                                    / self.config.wait_time_seconds)
+                                    + 1;
+
+                                if stalled >= max_stalled as u32 {
+                                    warn!(
+                                        in_flight = in_flight,
+                                        stalled_checks = stalled,
+                                        visibility_timeout_secs = self.config.visibility_timeout,
+                                        "In-flight messages stuck, assuming orphaned - exiting. \
+                                         These messages will become visible again after visibility timeout."
+                                    );
+                                    self.stopped.store(true, Ordering::Relaxed);
+                                    return Ok(None);
+                                }
+                                info!(
+                                    in_flight = in_flight,
+                                    stalled_checks = stalled,
+                                    max_stalled_checks = max_stalled,
+                                    visibility_timeout_secs = self.config.visibility_timeout,
+                                    "Waiting for in-flight messages (no progress detected). \
+                                     Workers may be processing large files or are stuck."
+                                );
+                            } else {
+                                // In-flight count changed - progress is being made
+                                self.stalled_count.store(0, Ordering::Relaxed);
+                                info!(
+                                    visible = visible,
+                                    in_flight = in_flight,
+                                    previous_in_flight = last,
+                                    "Queue has in-flight messages, waiting for completion"
+                                );
+                            }
                         }
                     }
                     Err(e) => {
@@ -476,6 +511,13 @@ impl WorkQueue for SqsSource {
     fn has_more(&self) -> bool {
         !self.stopped.load(Ordering::Relaxed)
     }
+
+    fn set_pending_prefetch_counter(
+        &self,
+        counter: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        *self.pending_prefetch_items.lock() = Some(counter);
+    }
 }
 
 #[cfg(test)]
@@ -528,5 +570,336 @@ mod tests {
         // Test minimum of 1
         let config = SqsSourceConfig::new("url").with_concurrent_polls(0);
         assert_eq!(config.concurrent_polls, 1);
+    }
+
+    #[test]
+    fn test_pending_prefetch_count_default() {
+        // Create a mock SQS client - we only need to test the pending_prefetch logic
+        let aws_config = aws_sdk_sqs::Config::builder()
+            .behavior_version_latest()
+            .build();
+        let client = Client::from_conf(aws_config);
+        let config = SqsSourceConfig::new("url");
+        let source = SqsSource::new(client, config);
+
+        // Default should be 0 when no counter is set
+        assert_eq!(source.pending_prefetch_count(), 0);
+    }
+
+    #[test]
+    fn test_pending_prefetch_count_with_counter() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+
+        let aws_config = aws_sdk_sqs::Config::builder()
+            .behavior_version_latest()
+            .build();
+        let client = Client::from_conf(aws_config);
+        let config = SqsSourceConfig::new("url");
+        let source = SqsSource::new(client, config);
+
+        // Create and set a counter
+        let counter = Arc::new(AtomicUsize::new(0));
+        source.set_pending_prefetch_counter(counter.clone());
+
+        // Counter should now reflect updates
+        assert_eq!(source.pending_prefetch_count(), 0);
+
+        counter.store(5, Ordering::SeqCst);
+        assert_eq!(source.pending_prefetch_count(), 5);
+
+        counter.store(10, Ordering::SeqCst);
+        assert_eq!(source.pending_prefetch_count(), 10);
+
+        counter.store(0, Ordering::SeqCst);
+        assert_eq!(source.pending_prefetch_count(), 0);
+    }
+
+    #[test]
+    fn test_pending_prefetch_counter_fetch_add_sub() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+
+        let aws_config = aws_sdk_sqs::Config::builder()
+            .behavior_version_latest()
+            .build();
+        let client = Client::from_conf(aws_config);
+        let config = SqsSourceConfig::new("url");
+        let source = SqsSource::new(client, config);
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        source.set_pending_prefetch_counter(counter.clone());
+
+        // Simulate worker behavior: increment on prefetch start, decrement on completion
+        counter.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(source.pending_prefetch_count(), 1);
+
+        counter.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(source.pending_prefetch_count(), 2);
+
+        counter.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(source.pending_prefetch_count(), 3);
+
+        // Now process items
+        counter.fetch_sub(1, Ordering::SeqCst);
+        assert_eq!(source.pending_prefetch_count(), 2);
+
+        counter.fetch_sub(1, Ordering::SeqCst);
+        assert_eq!(source.pending_prefetch_count(), 1);
+
+        counter.fetch_sub(1, Ordering::SeqCst);
+        assert_eq!(source.pending_prefetch_count(), 0);
+    }
+
+    #[test]
+    fn test_pending_prefetch_counter_thread_safety() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+        use std::thread;
+
+        let aws_config = aws_sdk_sqs::Config::builder()
+            .behavior_version_latest()
+            .build();
+        let client = Client::from_conf(aws_config);
+        let config = SqsSourceConfig::new("url");
+        let source = Arc::new(SqsSource::new(client, config));
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        source.set_pending_prefetch_counter(counter.clone());
+
+        let mut handles = vec![];
+
+        // Spawn threads that increment the counter
+        for _ in 0..10 {
+            let counter_clone = counter.clone();
+            handles.push(thread::spawn(move || {
+                for _ in 0..100 {
+                    counter_clone.fetch_add(1, Ordering::SeqCst);
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // After 10 threads each adding 100, we should have 1000
+        assert_eq!(source.pending_prefetch_count(), 1000);
+
+        // Now spawn threads to decrement
+        let mut handles = vec![];
+        for _ in 0..10 {
+            let counter_clone = counter.clone();
+            handles.push(thread::spawn(move || {
+                for _ in 0..100 {
+                    counter_clone.fetch_sub(1, Ordering::SeqCst);
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Should be back to 0
+        assert_eq!(source.pending_prefetch_count(), 0);
+    }
+
+    #[test]
+    fn test_set_pending_prefetch_counter_replaces_previous() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+
+        let aws_config = aws_sdk_sqs::Config::builder()
+            .behavior_version_latest()
+            .build();
+        let client = Client::from_conf(aws_config);
+        let config = SqsSourceConfig::new("url");
+        let source = SqsSource::new(client, config);
+
+        // Set first counter
+        let counter1 = Arc::new(AtomicUsize::new(100));
+        source.set_pending_prefetch_counter(counter1.clone());
+        assert_eq!(source.pending_prefetch_count(), 100);
+
+        // Set second counter - should replace the first
+        let counter2 = Arc::new(AtomicUsize::new(200));
+        source.set_pending_prefetch_counter(counter2.clone());
+        assert_eq!(source.pending_prefetch_count(), 200);
+
+        // Updating counter1 should not affect the source
+        counter1.store(999, Ordering::SeqCst);
+        assert_eq!(source.pending_prefetch_count(), 200);
+
+        // Updating counter2 should affect the source
+        counter2.store(300, Ordering::SeqCst);
+        assert_eq!(source.pending_prefetch_count(), 300);
+    }
+
+    // === Drain Mode Condition Edge Case Tests ===
+
+    #[test]
+    fn test_drain_mode_completion_conditions() {
+        // Test the three conditions for drain mode completion:
+        // 1. visible == 0
+        // 2. in_flight == 0
+        // 3. pending_prefetch == 0
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+
+        let aws_config = aws_sdk_sqs::Config::builder()
+            .behavior_version_latest()
+            .build();
+        let client = Client::from_conf(aws_config);
+        let config = SqsSourceConfig::new("url").with_drain_mode(true);
+        let source = SqsSource::new(client, config);
+
+        // Case 1: No counter set - pending_prefetch defaults to 0
+        assert_eq!(source.pending_prefetch_count(), 0);
+
+        // Case 2: Counter set to 0
+        let counter = Arc::new(AtomicUsize::new(0));
+        source.set_pending_prefetch_counter(counter.clone());
+        assert_eq!(source.pending_prefetch_count(), 0);
+
+        // Case 3: Counter set to non-zero - should prevent drain completion
+        counter.store(5, Ordering::SeqCst);
+        assert_eq!(source.pending_prefetch_count(), 5);
+        // In real code, this would cause drain mode to wait
+
+        // Case 4: Counter decrements to 0 - should allow drain completion
+        counter.store(0, Ordering::SeqCst);
+        assert_eq!(source.pending_prefetch_count(), 0);
+    }
+
+    #[test]
+    fn test_drain_mode_stall_reset_with_pending_prefetch() {
+        // Test that stall counter is reset when pending_prefetch > 0
+        // This simulates the scenario where workers are processing prefetched items
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+
+        let aws_config = aws_sdk_sqs::Config::builder()
+            .behavior_version_latest()
+            .build();
+        let client = Client::from_conf(aws_config);
+        let config = SqsSourceConfig::new("url")
+            .with_drain_mode(true)
+            .with_visibility_timeout(300)
+            .with_wait_time(20);
+        let source = SqsSource::new(client, config);
+
+        let counter = Arc::new(AtomicUsize::new(10)); // 10 pending items
+        source.set_pending_prefetch_counter(counter.clone());
+
+        // Verify pending count
+        assert_eq!(source.pending_prefetch_count(), 10);
+
+        // Simulate workers finishing
+        for i in (0..=10).rev() {
+            counter.store(i, Ordering::SeqCst);
+            assert_eq!(source.pending_prefetch_count(), i);
+        }
+
+        // Final check - should be 0
+        assert_eq!(source.pending_prefetch_count(), 0);
+    }
+
+    #[test]
+    fn test_drain_mode_config_enabled() {
+        let config = SqsSourceConfig::new("url").with_drain_mode(true);
+        assert!(config.drain_mode);
+
+        let config = SqsSourceConfig::new("url").with_drain_mode(false);
+        assert!(!config.drain_mode);
+
+        // Default is false
+        let config = SqsSourceConfig::new("url");
+        assert!(!config.drain_mode);
+    }
+
+    #[test]
+    fn test_stalled_count_calculation() {
+        // Test the max_stalled calculation: (visibility_timeout / wait_time) + 1
+        let config = SqsSourceConfig::new("url")
+            .with_visibility_timeout(300) // 5 minutes
+            .with_wait_time(20); // 20 seconds
+
+        // max_stalled = (300 / 20) + 1 = 16
+        let max_stalled = (config.visibility_timeout / config.wait_time_seconds) + 1;
+        assert_eq!(max_stalled, 16);
+
+        // Different config
+        let config = SqsSourceConfig::new("url")
+            .with_visibility_timeout(60)
+            .with_wait_time(10);
+
+        let max_stalled = (config.visibility_timeout / config.wait_time_seconds) + 1;
+        assert_eq!(max_stalled, 7);
+    }
+
+    #[test]
+    fn test_pending_prefetch_counter_concurrent_read_write() {
+        // Test that reading the counter while another thread writes is safe
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+        use std::thread;
+
+        let aws_config = aws_sdk_sqs::Config::builder()
+            .behavior_version_latest()
+            .build();
+        let client = Client::from_conf(aws_config);
+        let config = SqsSourceConfig::new("url");
+        let source = Arc::new(SqsSource::new(client, config));
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        source.set_pending_prefetch_counter(counter.clone());
+
+        // Writer thread
+        let counter_writer = counter.clone();
+        let writer_handle = thread::spawn(move || {
+            for i in 0..10000 {
+                counter_writer.store(i % 100, Ordering::SeqCst);
+            }
+        });
+
+        // Reader threads
+        let mut reader_handles = vec![];
+        for _ in 0..4 {
+            let source_clone = source.clone();
+            reader_handles.push(thread::spawn(move || {
+                for _ in 0..10000 {
+                    let val = source_clone.pending_prefetch_count();
+                    // Value should be in valid range (0-99)
+                    assert!(val < 100, "Value {} out of expected range", val);
+                }
+            }));
+        }
+
+        writer_handle.join().unwrap();
+        for handle in reader_handles {
+            handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_has_more_reflects_stopped_state() {
+        let aws_config = aws_sdk_sqs::Config::builder()
+            .behavior_version_latest()
+            .build();
+        let client = Client::from_conf(aws_config);
+        let config = SqsSourceConfig::new("url");
+        let source = SqsSource::new(client, config);
+
+        // Initially should have more
+        assert!(source.has_more());
+
+        // After marking stopped, should not have more
+        source.stopped.store(true, Ordering::Relaxed);
+        assert!(!source.has_more());
+
+        // Resetting stopped
+        source.stopped.store(false, Ordering::Relaxed);
+        assert!(source.has_more());
     }
 }

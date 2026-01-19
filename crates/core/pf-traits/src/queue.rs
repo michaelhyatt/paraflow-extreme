@@ -93,6 +93,22 @@ pub trait WorkQueue: Send + Sync {
     fn has_more(&self) -> bool {
         true
     }
+
+    /// Sets a shared counter for tracking pending prefetch items.
+    ///
+    /// This is used during drain mode to ensure all prefetched items in worker
+    /// buffers are processed before declaring the queue empty. The counter is
+    /// updated by worker threads as they prefetch and process items.
+    ///
+    /// # Default Implementation
+    ///
+    /// No-op for implementations that don't support drain mode coordination.
+    fn set_pending_prefetch_counter(
+        &self,
+        _counter: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        // Default: no-op for implementations that don't need this
+    }
 }
 
 /// A message received from the queue.
@@ -274,5 +290,59 @@ mod tests {
         assert_eq!(depth.visible, 0);
         assert_eq!(depth.in_flight, 0);
         assert_eq!(depth.dlq, 0);
+    }
+
+    // Test the default implementation of set_pending_prefetch_counter
+    // by creating a minimal mock implementation
+    mod mock_queue {
+        use super::*;
+
+        /// A minimal mock queue for testing trait default methods
+        pub struct MockQueue;
+
+        #[async_trait]
+        impl WorkQueue for MockQueue {
+            async fn receive_batch(&self, _max: usize) -> Result<Option<Vec<QueueMessage>>> {
+                Ok(Some(vec![]))
+            }
+
+            async fn ack(&self, _receipt: &str) -> Result<()> {
+                Ok(())
+            }
+
+            async fn nack(&self, _receipt: &str) -> Result<()> {
+                Ok(())
+            }
+
+            async fn move_to_dlq(&self, _receipt: &str, _failure: &FailureContext) -> Result<()> {
+                Ok(())
+            }
+
+            // Note: We don't override set_pending_prefetch_counter,
+            // so it uses the default no-op implementation
+        }
+    }
+
+    #[test]
+    fn test_set_pending_prefetch_counter_default_is_noop() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+
+        let queue = mock_queue::MockQueue;
+        let counter = Arc::new(AtomicUsize::new(42));
+
+        // Call the default implementation - it should be a no-op
+        // This should not panic and should complete normally
+        queue.set_pending_prefetch_counter(counter.clone());
+
+        // Counter should still have its original value (default impl doesn't use it)
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 42);
+    }
+
+    #[test]
+    fn test_has_more_default_returns_true() {
+        let queue = mock_queue::MockQueue;
+        // Default implementation should return true
+        assert!(queue.has_more());
     }
 }

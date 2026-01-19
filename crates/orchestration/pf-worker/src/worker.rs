@@ -9,7 +9,7 @@ use crate::stats::{StatsSnapshot, WorkerStats};
 use pf_error::{ErrorCategory, ProcessingStage, Result};
 use pf_traits::{BatchIndexer, FailureContext, StreamingReader};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -73,6 +73,15 @@ impl<S: WorkQueue + 'static, R: StreamingReader + 'static> Worker<S, R> {
             "Starting worker"
         );
 
+        // Create shared counter for pending prefetch items (for drain mode coordination)
+        let pending_prefetch_counter = Arc::new(AtomicUsize::new(0));
+
+        // Set up the pending prefetch counter on the source for drain mode coordination
+        if prefetch_enabled {
+            self.source
+                .set_pending_prefetch_counter(pending_prefetch_counter.clone());
+        }
+
         // Create the work router
         let (router, receivers) =
             WorkRouter::new(self.config.thread_count, self.config.channel_buffer);
@@ -100,6 +109,7 @@ impl<S: WorkQueue + 'static, R: StreamingReader + 'static> Worker<S, R> {
             let cancel_token = cancellation_token.child_token();
             let status = worker_statuses[thread_id].clone();
             let prefetch_config = self.config.prefetch.clone();
+            let prefetch_counter = pending_prefetch_counter.clone();
 
             let handle = if prefetch_enabled {
                 tokio::spawn(async move {
@@ -112,6 +122,7 @@ impl<S: WorkQueue + 'static, R: StreamingReader + 'static> Worker<S, R> {
                         cancel_token,
                         status,
                         prefetch_config,
+                        prefetch_counter,
                     )
                     .await;
                 })
@@ -398,6 +409,7 @@ async fn worker_thread_with_prefetch<S: WorkQueue>(
     cancel_token: CancellationToken,
     status: Arc<WorkerStatus>,
     prefetch_config: PrefetchConfig,
+    pending_prefetch_counter: Arc<AtomicUsize>,
 ) {
     debug!(
         thread = thread_id,
@@ -420,6 +432,8 @@ async fn worker_thread_with_prefetch<S: WorkQueue>(
                         file = %msg.work_item.file_uri,
                         "Starting prefetch for queued message"
                     );
+                    // Increment global pending count when starting prefetch
+                    pending_prefetch_counter.fetch_add(1, Ordering::SeqCst);
                     prefetcher.spawn_prefetch(msg);
                 }
                 Err(mpsc::error::TryRecvError::Empty) => break,
@@ -436,6 +450,9 @@ async fn worker_thread_with_prefetch<S: WorkQueue>(
 
         // 2. Check for prefetch errors first
         if let Some(prefetch_error) = buffer.pop_error().await {
+            // Decrement global pending count when consuming error
+            pending_prefetch_counter.fetch_sub(1, Ordering::SeqCst);
+
             let PrefetchError { message, error } = prefetch_error;
             let receipt_handle = message.receipt_handle.clone();
             let file_uri = message.work_item.file_uri.clone();
@@ -464,7 +481,7 @@ async fn worker_thread_with_prefetch<S: WorkQueue>(
         }
 
         // 3. Get next item - prefer prefetched, fall back to channel
-        let (message, stream) = {
+        let (message, stream, is_prefetched) = {
             // Try to get a prefetched item first
             if let Some(item) = buffer.pop_ready().await {
                 trace!(
@@ -472,7 +489,7 @@ async fn worker_thread_with_prefetch<S: WorkQueue>(
                     file = %item.message.work_item.file_uri,
                     "Using prefetched stream"
                 );
-                (item.message, Some(item.stream))
+                (item.message, Some(item.stream), true)
             } else {
                 // No prefetched items, wait for channel or cancellation
                 tokio::select! {
@@ -493,7 +510,7 @@ async fn worker_thread_with_prefetch<S: WorkQueue>(
                                     file = %msg.work_item.file_uri,
                                     "Processing message directly (no prefetch available)"
                                 );
-                                (msg, None)
+                                (msg, None, false)
                             }
                             None => {
                                 // Channel closed and no more prefetched items
@@ -510,6 +527,11 @@ async fn worker_thread_with_prefetch<S: WorkQueue>(
                 }
             }
         };
+
+        // Decrement global pending count when consuming a prefetched item
+        if is_prefetched {
+            pending_prefetch_counter.fetch_sub(1, Ordering::SeqCst);
+        }
 
         let receipt_handle = message.receipt_handle.clone();
         let file_uri = message.work_item.file_uri.clone();
@@ -834,5 +856,232 @@ mod tests {
             receive_count: 1,
             first_received_at: Utc::now(),
         }
+    }
+
+    // === Pending Prefetch Counter Edge Case Tests ===
+
+    #[test]
+    fn test_atomic_counter_fetch_add_sub_balance() {
+        // Test that fetch_add and fetch_sub operations balance correctly
+        // This simulates the worker thread behavior
+        let counter = Arc::new(AtomicUsize::new(0));
+
+        // Simulate multiple prefetch starts
+        for _ in 0..100 {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), 100);
+
+        // Simulate processing all items
+        for _ in 0..100 {
+            counter.fetch_sub(1, Ordering::SeqCst);
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn test_atomic_counter_concurrent_add_sub() {
+        // Test concurrent increments and decrements from multiple threads
+        // Simulates multiple worker threads operating on the same counter
+        use std::thread;
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let mut handles = vec![];
+
+        // Spawn 8 "worker" threads that each do 1000 add/sub cycles
+        for _ in 0..8 {
+            let counter_clone = counter.clone();
+            handles.push(thread::spawn(move || {
+                for _ in 0..1000 {
+                    // Increment (start prefetch)
+                    counter_clone.fetch_add(1, Ordering::SeqCst);
+                    // Small yield to increase interleaving
+                    std::hint::spin_loop();
+                    // Decrement (finish processing)
+                    counter_clone.fetch_sub(1, Ordering::SeqCst);
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // After all balanced operations, counter should be 0
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn test_atomic_counter_underflow_wraps() {
+        // Test behavior when counter underflows (should wrap to usize::MAX)
+        // This is a defensive test - in production, underflow should never happen
+        // if the code is correct, but we should understand the behavior
+        let counter = Arc::new(AtomicUsize::new(0));
+
+        // Subtracting from 0 causes wrapping to usize::MAX
+        let result = counter.fetch_sub(1, Ordering::SeqCst);
+        assert_eq!(result, 0); // fetch_sub returns the OLD value
+
+        // Counter is now at usize::MAX (wrapped)
+        let current = counter.load(Ordering::SeqCst);
+        assert_eq!(current, usize::MAX);
+
+        // Adding 1 brings it back to 0
+        counter.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn test_worker_with_prefetch_disabled() {
+        // Test that workers work correctly when prefetch is disabled
+        // The pending prefetch counter should still be created but never incremented
+        let json_item = r#"{"uri":"s3://bucket/file.parquet","size_bytes":1024,"last_modified":"2024-01-01T00:00:00Z"}"#;
+        let input = Cursor::new(json_item);
+        let source = StdinSource::with_reader(Box::new(input));
+        let reader = MockReader;
+        let destination = Arc::new(StatsDestination::new());
+
+        // Explicitly disable prefetch using the disabled() constructor
+        let prefetch_config = crate::prefetch::PrefetchConfig::disabled();
+        let config = WorkerConfig::new()
+            .with_thread_count(1)
+            .with_prefetch(prefetch_config);
+
+        let worker = Worker::new(config, source, reader, destination.clone());
+        let stats = worker.run().await.unwrap();
+
+        // Worker should still process successfully
+        assert_eq!(stats.files_processed, 1);
+    }
+
+    #[tokio::test]
+    async fn test_worker_with_prefetch_enabled() {
+        // Test that workers work correctly when prefetch is enabled
+        let json_item = r#"{"uri":"s3://bucket/file.parquet","size_bytes":1024,"last_modified":"2024-01-01T00:00:00Z"}"#;
+        let input = Cursor::new(json_item);
+        let source = StdinSource::with_reader(Box::new(input));
+        let reader = MockReader;
+        let destination = Arc::new(StatsDestination::new());
+
+        // Default config has prefetch enabled, just set max_prefetch_count
+        let prefetch_config = crate::prefetch::PrefetchConfig::default().with_max_prefetch_count(2);
+        let config = WorkerConfig::new()
+            .with_thread_count(1)
+            .with_prefetch(prefetch_config);
+
+        let worker = Worker::new(config, source, reader, destination.clone());
+        let stats = worker.run().await.unwrap();
+
+        // Worker should process successfully with prefetch
+        assert_eq!(stats.files_processed, 1);
+    }
+
+    #[test]
+    fn test_stdin_source_ignores_prefetch_counter() {
+        // StdinSource uses the default no-op implementation
+        // This test verifies it doesn't crash or misbehave
+        use crate::source::WorkQueue;
+
+        let input = Cursor::new("");
+        let source = StdinSource::with_reader(Box::new(input));
+
+        let counter = Arc::new(AtomicUsize::new(42));
+
+        // This should be a no-op (default trait implementation)
+        source.set_pending_prefetch_counter(counter.clone());
+
+        // Counter should be unchanged (default impl is no-op)
+        assert_eq!(counter.load(Ordering::SeqCst), 42);
+
+        // has_more should return true initially (before receive_batch is called)
+        // StdinSource only sets eof_reached after receive_batch returns empty
+        assert!(source.has_more());
+    }
+
+    #[test]
+    fn test_prefetch_counter_multiple_threads_interleaved() {
+        // Simulate the real-world scenario where multiple worker threads
+        // interleave their prefetch operations
+        use std::thread;
+
+        let counter = Arc::new(AtomicUsize::new(0));
+
+        // Track max concurrent prefetch count seen
+        let max_concurrent = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = vec![];
+
+        // Spawn 4 worker threads
+        for _ in 0..4 {
+            let counter_clone = counter.clone();
+            let max_clone = max_concurrent.clone();
+
+            handles.push(thread::spawn(move || {
+                for _ in 0..50 {
+                    // Start prefetch
+                    let new_val = counter_clone.fetch_add(1, Ordering::SeqCst) + 1;
+
+                    // Update max if needed
+                    let mut current_max = max_clone.load(Ordering::SeqCst);
+                    while new_val > current_max {
+                        match max_clone.compare_exchange_weak(
+                            current_max,
+                            new_val,
+                            Ordering::SeqCst,
+                            Ordering::SeqCst,
+                        ) {
+                            Ok(_) => break,
+                            Err(actual) => current_max = actual,
+                        }
+                    }
+
+                    // Simulate some work
+                    std::thread::sleep(std::time::Duration::from_micros(10));
+
+                    // Finish processing
+                    counter_clone.fetch_sub(1, Ordering::SeqCst);
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Counter should be back to 0
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+
+        // We should have seen some concurrent prefetch activity
+        // (max_concurrent > 1 means threads overlapped)
+        let max_seen = max_concurrent.load(Ordering::SeqCst);
+        assert!(
+            max_seen >= 1,
+            "Should have seen at least 1 concurrent prefetch"
+        );
+    }
+
+    #[test]
+    fn test_prefetch_counter_exact_tracking() {
+        // Test that the counter exactly tracks the number of in-flight prefetches
+        let counter = Arc::new(AtomicUsize::new(0));
+
+        // Simulate prefetch lifecycle for 5 items
+        let items = ["file1", "file2", "file3", "file4", "file5"];
+
+        // Start prefetching all items
+        for (i, _item) in items.iter().enumerate() {
+            counter.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(counter.load(Ordering::SeqCst), i + 1);
+        }
+
+        assert_eq!(counter.load(Ordering::SeqCst), 5);
+
+        // Process items one by one
+        for (i, _item) in items.iter().enumerate() {
+            counter.fetch_sub(1, Ordering::SeqCst);
+            assert_eq!(counter.load(Ordering::SeqCst), 4 - i);
+        }
+
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
     }
 }

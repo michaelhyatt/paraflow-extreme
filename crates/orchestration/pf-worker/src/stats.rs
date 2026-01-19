@@ -22,6 +22,39 @@ struct PaddedAtomicU64 {
     _padding: [u8; CACHE_LINE_SIZE - std::mem::size_of::<AtomicU64>()],
 }
 
+/// A cache-line-padded atomic usize counter.
+#[repr(C, align(64))]
+#[derive(Debug)]
+struct PaddedAtomicUsize {
+    value: std::sync::atomic::AtomicUsize,
+    _padding: [u8; CACHE_LINE_SIZE - std::mem::size_of::<std::sync::atomic::AtomicUsize>()],
+}
+
+impl Default for PaddedAtomicUsize {
+    fn default() -> Self {
+        Self::new(0)
+    }
+}
+
+impl PaddedAtomicUsize {
+    fn new(val: usize) -> Self {
+        Self {
+            value: std::sync::atomic::AtomicUsize::new(val),
+            _padding: [0; CACHE_LINE_SIZE - std::mem::size_of::<std::sync::atomic::AtomicUsize>()],
+        }
+    }
+
+    #[inline]
+    fn load(&self, ordering: Ordering) -> usize {
+        self.value.load(ordering)
+    }
+
+    #[inline]
+    fn store(&self, val: usize, ordering: Ordering) {
+        self.value.store(val, ordering)
+    }
+}
+
 impl Default for PaddedAtomicU64 {
     fn default() -> Self {
         Self::new(0)
@@ -100,6 +133,11 @@ pub struct WorkerStats {
     /// This is the actual "work done" time, excluding idle/waiting time between files.
     /// Use this for accurate throughput calculations.
     cumulative_processing_time_us: PaddedAtomicU64,
+
+    /// Number of items currently in prefetch buffers across all worker threads.
+    /// This is used during drain mode to ensure all prefetched items are processed
+    /// before signaling completion.
+    pending_prefetch_items: PaddedAtomicUsize,
 }
 
 impl WorkerStats {
@@ -188,6 +226,23 @@ impl WorkerStats {
     /// Record a permanent error.
     pub fn record_permanent_error(&self) {
         self.permanent_errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Set the current count of pending prefetch items across all worker threads.
+    ///
+    /// This is called periodically by worker threads to report how many items
+    /// are in their prefetch buffers. The SQS source uses this during drain mode
+    /// to ensure all prefetched items are processed before signaling completion.
+    pub fn set_pending_prefetch(&self, count: usize) {
+        self.pending_prefetch_items.store(count, Ordering::SeqCst);
+    }
+
+    /// Get the current count of pending prefetch items.
+    ///
+    /// During drain mode, this should be checked to ensure workers have
+    /// processed all their prefetched items before declaring the queue empty.
+    pub fn pending_prefetch_items(&self) -> usize {
+        self.pending_prefetch_items.load(Ordering::SeqCst)
     }
 
     /// Get the total duration of the worker run (includes startup and drain time).
@@ -620,5 +675,86 @@ mod tests {
             64,
             "PaddedAtomicU64 should be exactly 64 bytes"
         );
+    }
+
+    #[test]
+    fn test_padded_atomic_usize_alignment() {
+        // Verify that PaddedAtomicUsize is properly aligned to cache line boundaries
+        assert_eq!(
+            std::mem::align_of::<super::PaddedAtomicUsize>(),
+            64,
+            "PaddedAtomicUsize should be 64-byte aligned"
+        );
+        assert_eq!(
+            std::mem::size_of::<super::PaddedAtomicUsize>(),
+            64,
+            "PaddedAtomicUsize should be exactly 64 bytes"
+        );
+    }
+
+    #[test]
+    fn test_pending_prefetch_items_default() {
+        let stats = WorkerStats::new();
+        // Default value should be 0
+        assert_eq!(stats.pending_prefetch_items(), 0);
+    }
+
+    #[test]
+    fn test_pending_prefetch_items_set_and_get() {
+        let stats = WorkerStats::new();
+
+        // Set to a value
+        stats.set_pending_prefetch(5);
+        assert_eq!(stats.pending_prefetch_items(), 5);
+
+        // Update to a different value
+        stats.set_pending_prefetch(10);
+        assert_eq!(stats.pending_prefetch_items(), 10);
+
+        // Set back to 0
+        stats.set_pending_prefetch(0);
+        assert_eq!(stats.pending_prefetch_items(), 0);
+    }
+
+    #[test]
+    fn test_pending_prefetch_items_thread_safety() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let stats = Arc::new(WorkerStats::new());
+        let mut handles = vec![];
+
+        // Spawn multiple threads that concurrently update the counter
+        for i in 0..10 {
+            let stats_clone = Arc::clone(&stats);
+            handles.push(thread::spawn(move || {
+                // Each thread sets the value multiple times
+                for j in 0..100 {
+                    stats_clone.set_pending_prefetch(i * 100 + j);
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Final value should be one of the values set by the threads
+        // (we can't predict which one due to race conditions, but it should be valid)
+        let final_value = stats.pending_prefetch_items();
+        assert!(final_value < 1000, "Value should be in expected range");
+    }
+
+    #[test]
+    fn test_pending_prefetch_items_large_values() {
+        let stats = WorkerStats::new();
+
+        // Test with large values
+        stats.set_pending_prefetch(usize::MAX);
+        assert_eq!(stats.pending_prefetch_items(), usize::MAX);
+
+        // Test with 0 again
+        stats.set_pending_prefetch(0);
+        assert_eq!(stats.pending_prefetch_items(), 0);
     }
 }
