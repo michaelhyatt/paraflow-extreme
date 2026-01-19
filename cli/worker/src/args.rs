@@ -94,6 +94,18 @@ pub struct Cli {
     #[arg(long, default_value = "30", value_parser = clap::value_parser!(u64).range(1..))]
     pub shutdown_timeout: u64,
 
+    // === Prefetch Configuration ===
+    /// Maximum files to prefetch per thread.
+    /// Higher values improve throughput by keeping more files ready for processing.
+    /// Set to 0 to disable prefetching.
+    #[arg(long, default_value = "2", value_name = "COUNT")]
+    pub prefetch_count: usize,
+
+    /// Memory budget per thread for prefetch in MB.
+    /// The prefetcher will not start new prefetches if it would exceed this limit.
+    #[arg(long, default_value = "30", value_name = "MB")]
+    pub prefetch_memory_mb: usize,
+
     // === AWS Configuration ===
     /// AWS region
     #[arg(long, env = "AWS_REGION", default_value = "us-east-1")]

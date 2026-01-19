@@ -94,9 +94,11 @@ module "ec2" {
   sqs_queue_arn = module.sqs.queue_arn
 
   # Worker configuration
-  worker_count   = var.worker_count
-  worker_threads = var.worker_threads
-  batch_size     = var.batch_size
+  worker_count       = var.worker_count
+  worker_threads     = var.worker_threads
+  batch_size         = var.batch_size
+  prefetch_count     = var.prefetch_count
+  prefetch_memory_mb = var.prefetch_memory_mb
 
   # Logging
   log_group_name = module.job_logs.log_group_name

@@ -296,6 +296,8 @@ resource "aws_instance" "worker" {
     sqs_queue_url              = var.sqs_queue_url
     worker_threads             = var.worker_threads
     batch_size                 = var.batch_size
+    prefetch_count             = var.prefetch_count
+    prefetch_memory_mb         = var.prefetch_memory_mb
     log_group_name             = var.log_group_name
     job_id                     = var.job_id
     enable_detailed_monitoring = var.enable_detailed_monitoring

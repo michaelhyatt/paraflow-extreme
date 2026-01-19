@@ -5,8 +5,9 @@ use aws_config::BehaviorVersion;
 use aws_credential_types::provider::ProvideCredentials;
 use pf_traits::BatchIndexer;
 use pf_worker::{
-    FormatDispatchReader, ReaderFactoryConfig, SqsSource, SqsSourceConfig, StatsDestination,
-    StdinSource, StdoutDestination, Worker, WorkerConfig, destination::OutputFormat,
+    FormatDispatchReader, PrefetchConfig, ReaderFactoryConfig, SqsSource, SqsSourceConfig,
+    StatsDestination, StdinSource, StdoutDestination, Worker, WorkerConfig,
+    destination::OutputFormat,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,6 +47,15 @@ async fn resolve_aws_credentials() -> Result<Option<(String, String, Option<Stri
 
 /// Execute the worker with the provided arguments.
 pub async fn execute(args: Cli) -> Result<pf_worker::stats::StatsSnapshot> {
+    // Build prefetch configuration
+    let prefetch_config = if args.prefetch_count == 0 {
+        PrefetchConfig::disabled()
+    } else {
+        PrefetchConfig::new()
+            .with_max_prefetch_count(args.prefetch_count)
+            .with_max_memory_bytes(args.prefetch_memory_mb * 1024 * 1024)
+    };
+
     // Build worker configuration
     let config = WorkerConfig::new()
         .with_thread_count(args.threads)
@@ -53,7 +63,8 @@ pub async fn execute(args: Cli) -> Result<pf_worker::stats::StatsSnapshot> {
         .with_max_retries(args.max_retries)
         .with_channel_buffer(args.channel_buffer)
         .with_shutdown_timeout(Duration::from_secs(args.shutdown_timeout))
-        .with_region(&args.region);
+        .with_region(&args.region)
+        .with_prefetch(prefetch_config);
 
     let config = if let Some(ref endpoint) = args.s3_endpoint {
         config.with_s3_endpoint(endpoint)

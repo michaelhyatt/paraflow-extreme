@@ -168,6 +168,18 @@ variable "batch_size" {
   default     = 10000
 }
 
+variable "prefetch_count" {
+  description = "Maximum files to prefetch per thread for improved throughput (0 = disable prefetching)"
+  type        = number
+  default     = 6
+}
+
+variable "prefetch_memory_mb" {
+  description = "Memory budget per thread for prefetch in MB"
+  type        = number
+  default     = 200
+}
+
 # ============================================================================
 # CloudWatch Configuration
 # ============================================================================
