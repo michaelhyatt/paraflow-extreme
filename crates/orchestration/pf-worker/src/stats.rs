@@ -69,7 +69,6 @@ pub struct WorkerStats {
 
     // === Padded atomic counters to prevent false sharing ===
     // Each counter is on its own cache line (64 bytes)
-
     /// Total number of files processed successfully
     files_processed: PaddedAtomicU64,
 

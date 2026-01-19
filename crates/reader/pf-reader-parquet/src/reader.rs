@@ -66,10 +66,7 @@ impl FilterPredicate {
                 let column = s[..pos].trim().to_string();
                 let value = s[pos + op_str.len()..].trim();
                 // Remove quotes if present
-                let value = value
-                    .trim_matches('"')
-                    .trim_matches('\'')
-                    .to_string();
+                let value = value.trim_matches('"').trim_matches('\'').to_string();
 
                 if !column.is_empty() && !value.is_empty() {
                     return Some(Self { column, op, value });

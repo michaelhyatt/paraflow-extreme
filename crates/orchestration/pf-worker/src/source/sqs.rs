@@ -2,10 +2,10 @@
 
 use super::parse_work_item;
 use async_trait::async_trait;
-use futures::future::join_all;
 use aws_sdk_sqs::Client;
 use aws_sdk_sqs::types::QueueAttributeName;
 use chrono::Utc;
+use futures::future::join_all;
 use pf_error::{PfError, QueueError, Result};
 use pf_traits::{FailureContext, QueueMessage, WorkQueue};
 use serde::{Deserialize, Serialize};

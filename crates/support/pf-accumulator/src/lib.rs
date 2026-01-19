@@ -128,7 +128,11 @@ impl BatchAccumulator {
     /// Use this when the batch size is already known (e.g., from reader metadata)
     /// to avoid the overhead of `get_array_memory_size()` on every batch.
     #[inline]
-    pub fn add_with_size(&mut self, batch: Arc<RecordBatch>, batch_size: usize) -> AccumulatorResult {
+    pub fn add_with_size(
+        &mut self,
+        batch: Arc<RecordBatch>,
+        batch_size: usize,
+    ) -> AccumulatorResult {
         let batch_records = batch.num_rows();
 
         // Check if adding this batch would exceed threshold
