@@ -31,7 +31,7 @@ worker_instance_type     = "t4g.medium" # 2 vCPU, 4GB RAM
 # Worker Configuration
 worker_count   = 1 # Number of worker instances (for horizontal scaling)
 worker_threads = 0 # 0 = auto-detect from CPU cores
-batch_size     = 10000
+batch_size     = 50000
 
 # SQS Configuration
 sqs_visibility_timeout = 300 # 5 minutes
