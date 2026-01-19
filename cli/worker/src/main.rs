@@ -73,26 +73,27 @@ async fn main() -> anyhow::Result<()> {
         format_bytes(stats.bytes_written)
     );
 
-    // Report active duration (actual file processing time) for accurate throughput
-    if let Some(active_secs) = stats.active_duration_secs() {
-        eprintln!("  Active duration:    {:.2}s", active_secs);
+    // Report cumulative processing time (actual work done) for accurate throughput
+    let cumulative_secs = stats.cumulative_processing_time_secs();
+    if cumulative_secs > 0.0 {
+        eprintln!("  Active duration:    {:.2}s", cumulative_secs);
 
-        if active_secs > 0.0 && stats.files_processed > 0 {
+        if stats.files_processed > 0 {
             eprintln!(
                 "  Throughput:         {:.1} files/sec",
-                stats.files_processed as f64 / active_secs
+                stats.files_processed as f64 / cumulative_secs
             );
         }
 
-        if active_secs > 0.0 && stats.records_processed > 0 {
+        if stats.records_processed > 0 {
             eprintln!(
                 "                      {} records/sec",
-                format_number((stats.records_processed as f64 / active_secs) as u64)
+                format_number((stats.records_processed as f64 / cumulative_secs) as u64)
             );
         }
 
-        if active_secs > 0.0 && stats.bytes_read > 0 {
-            let throughput_mbps = (stats.bytes_read as f64 / 1_000_000.0) / active_secs;
+        if stats.bytes_read > 0 {
+            let throughput_mbps = (stats.bytes_read as f64 / 1_000_000.0) / cumulative_secs;
             eprintln!("                      {:.1} MB/s read", throughput_mbps);
         }
     }

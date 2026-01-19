@@ -215,6 +215,7 @@ impl Pipeline {
                 result.records_processed,
                 result.bytes_read,
                 result.bytes_written,
+                duration,
             );
             info!(
                 thread = self.thread_id,
@@ -278,6 +279,7 @@ impl Pipeline {
                 result.records_processed,
                 result.bytes_read,
                 result.bytes_written,
+                duration,
             );
             info!(
                 thread = self.thread_id,

@@ -362,39 +362,14 @@ async fn worker_thread<S: WorkQueue>(
                 status.finish_processing();
 
                 // Handle the result
-                match handle_result(&result, &message, max_retries) {
-                    AckAction::Ack => {
-                        if let Err(e) = source.ack(&receipt_handle).await {
-                            error!(
-                                thread = thread_id,
-                                message = %receipt_handle,
-                                error = %e,
-                                "Failed to ack message"
-                            );
-                        }
-                    }
-                    AckAction::Retry(failure) => {
-                        if let Err(e) = source.nack(&receipt_handle).await {
-                            error!(
-                                thread = thread_id,
-                                message = %receipt_handle,
-                                error = %e,
-                                "Failed to nack message for retry"
-                            );
-                        }
-                        drop(failure); // Failure context logged but not needed for simple nack
-                    }
-                    AckAction::Dlq(failure) => {
-                        if let Err(e) = source.move_to_dlq(&receipt_handle, &failure).await {
-                            error!(
-                                thread = thread_id,
-                                message = %receipt_handle,
-                                error = %e,
-                                "Failed to move message to DLQ"
-                            );
-                        }
-                    }
-                }
+                handle_ack_action(
+                    &handle_result(&result, &message, max_retries),
+                    &source,
+                    thread_id,
+                    &receipt_handle,
+                    &file_uri,
+                )
+                .await;
             }
         }
     }
@@ -481,6 +456,7 @@ async fn worker_thread_with_prefetch<S: WorkQueue>(
                 &source,
                 thread_id,
                 &receipt_handle,
+                &file_uri,
             )
             .await;
 
@@ -562,6 +538,7 @@ async fn worker_thread_with_prefetch<S: WorkQueue>(
             &source,
             thread_id,
             &receipt_handle,
+            &file_uri,
         )
         .await;
     }
@@ -575,35 +552,53 @@ async fn handle_ack_action<S: WorkQueue>(
     source: &Arc<S>,
     thread_id: u32,
     receipt_handle: &str,
+    file_uri: &str,
 ) {
     match action {
         AckAction::Ack => {
+            info!(
+                thread = thread_id,
+                file = %file_uri,
+                "Acknowledging message (success)"
+            );
             if let Err(e) = source.ack(receipt_handle).await {
                 error!(
                     thread = thread_id,
-                    message = %receipt_handle,
+                    file = %file_uri,
                     error = %e,
                     "Failed to ack message"
                 );
             }
         }
         AckAction::Retry(failure) => {
+            warn!(
+                thread = thread_id,
+                file = %file_uri,
+                attempt = failure.total_attempts,
+                error = %failure.error_message,
+                "Returning message to queue for retry"
+            );
             if let Err(e) = source.nack(receipt_handle).await {
                 error!(
                     thread = thread_id,
-                    message = %receipt_handle,
+                    file = %file_uri,
                     error = %e,
                     "Failed to nack message for retry"
                 );
             }
-            // Failure context is in the closure, we don't need to use it here
-            let _ = failure;
         }
         AckAction::Dlq(failure) => {
+            error!(
+                thread = thread_id,
+                file = %file_uri,
+                attempt = failure.total_attempts,
+                error = %failure.error_message,
+                "Moving message to DLQ (permanent failure)"
+            );
             if let Err(e) = source.move_to_dlq(receipt_handle, failure).await {
                 error!(
                     thread = thread_id,
-                    message = %receipt_handle,
+                    file = %file_uri,
                     error = %e,
                     "Failed to move message to DLQ"
                 );

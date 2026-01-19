@@ -282,7 +282,10 @@ impl WorkQueue for SqsSource {
                 match self.get_queue_status().await {
                     Ok((visible, in_flight)) => {
                         if visible == 0 && in_flight == 0 {
-                            info!("Queue drained (verified empty), signaling completion");
+                            info!(
+                                empty_polls = empty_count,
+                                "Queue drained (verified empty), signaling completion"
+                            );
                             self.stopped.store(true, Ordering::Relaxed);
                             return Ok(None);
                         }
@@ -298,22 +301,31 @@ impl WorkQueue for SqsSource {
 
                             if stalled >= max_stalled as u32 {
                                 warn!(
-                                    "In-flight messages stuck at {} for {} checks, assuming orphaned - exiting",
-                                    in_flight, stalled
+                                    in_flight = in_flight,
+                                    stalled_checks = stalled,
+                                    visibility_timeout_secs = self.config.visibility_timeout,
+                                    "In-flight messages stuck, assuming orphaned - exiting. \
+                                     These messages will become visible again after visibility timeout."
                                 );
                                 self.stopped.store(true, Ordering::Relaxed);
                                 return Ok(None);
                             }
-                            debug!(
-                                "Queue has {} in-flight messages (stuck for {}/{} checks)",
-                                in_flight, stalled, max_stalled
+                            info!(
+                                in_flight = in_flight,
+                                stalled_checks = stalled,
+                                max_stalled_checks = max_stalled,
+                                visibility_timeout_secs = self.config.visibility_timeout,
+                                "Waiting for in-flight messages (no progress detected). \
+                                 Workers may be processing large files or are stuck."
                             );
                         } else {
                             // In-flight count changed - progress is being made
                             self.stalled_count.store(0, Ordering::Relaxed);
-                            debug!(
-                                "Queue has {} visible, {} in-flight messages (was {}), waiting",
-                                visible, in_flight, last
+                            info!(
+                                visible = visible,
+                                in_flight = in_flight,
+                                previous_in_flight = last,
+                                "Queue has in-flight messages, waiting for completion"
                             );
                         }
                     }
@@ -349,6 +361,11 @@ impl WorkQueue for SqsSource {
             // Try to parse as WorkItem or DiscoveredFile
             match parse_work_item(&body) {
                 Some(work_item) => {
+                    info!(
+                        file = %work_item.file_uri,
+                        receive_count = receive_count,
+                        "Received message from SQS"
+                    );
                     messages.push(QueueMessage {
                         receipt_handle,
                         work_item,

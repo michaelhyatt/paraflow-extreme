@@ -95,6 +95,11 @@ pub struct WorkerStats {
 
     /// Number of permanent errors encountered
     permanent_errors: PaddedAtomicU64,
+
+    /// Cumulative processing time in microseconds (sum of all file processing durations).
+    /// This is the actual "work done" time, excluding idle/waiting time between files.
+    /// Use this for accurate throughput calculations.
+    cumulative_processing_time_us: PaddedAtomicU64,
 }
 
 impl WorkerStats {
@@ -111,8 +116,18 @@ impl WorkerStats {
         self.completed_at = Some(Utc::now());
     }
 
-    /// Record a successfully processed file.
-    pub fn record_file_success(&self, records: u64, bytes_read: u64, bytes_written: u64) {
+    /// Record a successfully processed file with its processing duration.
+    ///
+    /// The duration is the actual time spent processing this file (from start to finish),
+    /// which is accumulated into `cumulative_processing_time_us` for accurate throughput
+    /// calculations that exclude idle time between files.
+    pub fn record_file_success(
+        &self,
+        records: u64,
+        bytes_read: u64,
+        bytes_written: u64,
+        duration: std::time::Duration,
+    ) {
         let now = Utc::now();
 
         // Track first file timestamp (only set once)
@@ -131,6 +146,8 @@ impl WorkerStats {
         self.bytes_read.fetch_add(bytes_read, Ordering::Relaxed);
         self.bytes_written
             .fetch_add(bytes_written, Ordering::Relaxed);
+        self.cumulative_processing_time_us
+            .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
     }
 
     /// Record a failed file.
@@ -251,52 +268,66 @@ impl WorkerStats {
         self.permanent_errors.load(Ordering::Relaxed)
     }
 
-    /// Calculate the throughput in files per second using active processing duration.
+    /// Get the cumulative processing time (sum of all file processing durations).
+    ///
+    /// This represents the actual "work done" time and excludes idle time waiting
+    /// for messages, SSM signals, or between file processing. Use this for accurate
+    /// throughput calculations.
+    pub fn cumulative_processing_time(&self) -> std::time::Duration {
+        std::time::Duration::from_micros(self.cumulative_processing_time_us.load(Ordering::Relaxed))
+    }
+
+    /// Get the cumulative processing time in seconds.
+    pub fn cumulative_processing_time_secs(&self) -> f64 {
+        self.cumulative_processing_time_us.load(Ordering::Relaxed) as f64 / 1_000_000.0
+    }
+
+    /// Calculate the throughput in files per second using cumulative processing time.
+    ///
+    /// This provides accurate throughput based on actual work done, excluding idle time.
     pub fn files_per_second(&self) -> Option<f64> {
-        self.active_duration().map(|d| {
-            let secs = d.num_milliseconds() as f64 / 1000.0;
-            if secs > 0.0 {
-                self.files_processed() as f64 / secs
-            } else {
-                0.0
-            }
-        })
+        let secs = self.cumulative_processing_time_secs();
+        if secs > 0.0 {
+            Some(self.files_processed() as f64 / secs)
+        } else {
+            None
+        }
     }
 
-    /// Calculate the throughput in records per second using active processing duration.
+    /// Calculate the throughput in records per second using cumulative processing time.
+    ///
+    /// This provides accurate throughput based on actual work done, excluding idle time.
     pub fn records_per_second(&self) -> Option<f64> {
-        self.active_duration().map(|d| {
-            let secs = d.num_milliseconds() as f64 / 1000.0;
-            if secs > 0.0 {
-                self.records_processed() as f64 / secs
-            } else {
-                0.0
-            }
-        })
+        let secs = self.cumulative_processing_time_secs();
+        if secs > 0.0 {
+            Some(self.records_processed() as f64 / secs)
+        } else {
+            None
+        }
     }
 
-    /// Calculate the throughput in MB per second (read) using active processing duration.
+    /// Calculate the throughput in MB per second (read) using cumulative processing time.
+    ///
+    /// This provides accurate throughput based on actual work done, excluding idle time.
     pub fn read_throughput_mbps(&self) -> Option<f64> {
-        self.active_duration().map(|d| {
-            let secs = d.num_milliseconds() as f64 / 1000.0;
-            if secs > 0.0 {
-                (self.bytes_read() as f64 / 1_000_000.0) / secs
-            } else {
-                0.0
-            }
-        })
+        let secs = self.cumulative_processing_time_secs();
+        if secs > 0.0 {
+            Some((self.bytes_read() as f64 / 1_000_000.0) / secs)
+        } else {
+            None
+        }
     }
 
-    /// Calculate the throughput in MB per second (written) using active processing duration.
+    /// Calculate the throughput in MB per second (written) using cumulative processing time.
+    ///
+    /// This provides accurate throughput based on actual work done, excluding idle time.
     pub fn write_throughput_mbps(&self) -> Option<f64> {
-        self.active_duration().map(|d| {
-            let secs = d.num_milliseconds() as f64 / 1000.0;
-            if secs > 0.0 {
-                (self.bytes_written() as f64 / 1_000_000.0) / secs
-            } else {
-                0.0
-            }
-        })
+        let secs = self.cumulative_processing_time_secs();
+        if secs > 0.0 {
+            Some((self.bytes_written() as f64 / 1_000_000.0) / secs)
+        } else {
+            None
+        }
     }
 
     /// Create a snapshot of the current statistics.
@@ -315,6 +346,9 @@ impl WorkerStats {
             batches_processed: self.batches_processed(),
             transient_errors: self.transient_errors(),
             permanent_errors: self.permanent_errors(),
+            cumulative_processing_time_us: self
+                .cumulative_processing_time_us
+                .load(Ordering::Relaxed),
         }
     }
 }
@@ -337,6 +371,10 @@ pub struct StatsSnapshot {
     pub batches_processed: u64,
     pub transient_errors: u64,
     pub permanent_errors: u64,
+    /// Cumulative processing time in microseconds (sum of all file processing durations).
+    /// This is the actual "work done" time, excluding idle/waiting time.
+    #[serde(default)]
+    pub cumulative_processing_time_us: u64,
 }
 
 impl StatsSnapshot {
@@ -348,10 +386,10 @@ impl StatsSnapshot {
         }
     }
 
-    /// Get the active processing duration (first file to last file).
+    /// Get the active processing duration (first file to last file) - wall clock time.
     ///
-    /// This excludes startup overhead and drain time. Use this for accurate
-    /// throughput calculations.
+    /// Note: This includes idle time between files. For accurate throughput,
+    /// use `cumulative_processing_time_secs()` instead.
     pub fn active_duration(&self) -> Option<Duration> {
         match (self.first_file_at, self.last_file_at) {
             (Some(first), Some(last)) => Some(last - first),
@@ -359,22 +397,50 @@ impl StatsSnapshot {
         }
     }
 
-    /// Get the active processing duration in seconds.
+    /// Get the active processing duration in seconds (wall clock time).
+    ///
+    /// Note: This includes idle time between files. For accurate throughput,
+    /// use `cumulative_processing_time_secs()` instead.
     pub fn active_duration_secs(&self) -> Option<f64> {
         self.active_duration()
             .map(|d| d.num_milliseconds() as f64 / 1000.0)
     }
 
-    /// Calculate the throughput in MB per second (read) using active duration.
+    /// Get the cumulative processing time (sum of all file processing durations).
+    ///
+    /// This represents the actual "work done" time and excludes idle time waiting
+    /// for messages, SSM signals, or between file processing. Use this for accurate
+    /// throughput calculations.
+    pub fn cumulative_processing_time(&self) -> std::time::Duration {
+        std::time::Duration::from_micros(self.cumulative_processing_time_us)
+    }
+
+    /// Get the cumulative processing time in seconds.
+    ///
+    /// This is the preferred duration metric for throughput calculations as it
+    /// only counts actual file processing time.
+    pub fn cumulative_processing_time_secs(&self) -> f64 {
+        self.cumulative_processing_time_us as f64 / 1_000_000.0
+    }
+
+    /// Calculate the throughput in records per second using cumulative processing time.
+    pub fn records_per_second(&self) -> Option<f64> {
+        let secs = self.cumulative_processing_time_secs();
+        if secs > 0.0 {
+            Some(self.records_processed as f64 / secs)
+        } else {
+            None
+        }
+    }
+
+    /// Calculate the throughput in MB per second (read) using cumulative processing time.
     pub fn read_throughput_mbps(&self) -> Option<f64> {
-        self.active_duration().map(|d| {
-            let secs = d.num_milliseconds() as f64 / 1000.0;
-            if secs > 0.0 {
-                (self.bytes_read as f64 / 1_000_000.0) / secs
-            } else {
-                0.0
-            }
-        })
+        let secs = self.cumulative_processing_time_secs();
+        if secs > 0.0 {
+            Some((self.bytes_read as f64 / 1_000_000.0) / secs)
+        } else {
+            None
+        }
     }
 }
 
@@ -395,13 +461,18 @@ mod tests {
     #[test]
     fn test_stats_record_file_success() {
         let stats = WorkerStats::new();
-        stats.record_file_success(1000, 1024, 2048);
-        stats.record_file_success(2000, 2048, 4096);
+        stats.record_file_success(1000, 1024, 2048, StdDuration::from_millis(100));
+        stats.record_file_success(2000, 2048, 4096, StdDuration::from_millis(200));
 
         assert_eq!(stats.files_processed(), 2);
         assert_eq!(stats.records_processed(), 3000);
         assert_eq!(stats.bytes_read(), 3072);
         assert_eq!(stats.bytes_written(), 6144);
+        // Cumulative processing time should be 300ms
+        assert_eq!(
+            stats.cumulative_processing_time(),
+            StdDuration::from_millis(300)
+        );
     }
 
     #[test]
@@ -426,11 +497,12 @@ mod tests {
     #[test]
     fn test_stats_snapshot() {
         let stats = WorkerStats::new();
-        stats.record_file_success(100, 1024, 2048);
+        stats.record_file_success(100, 1024, 2048, StdDuration::from_millis(50));
 
         let snapshot = stats.snapshot();
         assert_eq!(snapshot.files_processed, 1);
         assert_eq!(snapshot.records_processed, 100);
+        assert_eq!(snapshot.cumulative_processing_time_us, 50_000);
     }
 
     #[test]
@@ -445,7 +517,7 @@ mod tests {
             let stats_clone = Arc::clone(&stats);
             handles.push(thread::spawn(move || {
                 for _ in 0..100 {
-                    stats_clone.record_file_success(10, 100, 200);
+                    stats_clone.record_file_success(10, 100, 200, StdDuration::from_micros(100));
                 }
             }));
         }
@@ -456,6 +528,11 @@ mod tests {
 
         assert_eq!(stats.files_processed(), 1000);
         assert_eq!(stats.records_processed(), 10000);
+        // 1000 files × 100μs = 100ms cumulative time
+        assert_eq!(
+            stats.cumulative_processing_time(),
+            StdDuration::from_millis(100)
+        );
     }
 
     #[test]
@@ -468,7 +545,7 @@ mod tests {
         assert!(stats.last_file_at().is_none());
 
         // Process first file
-        stats.record_file_success(100, 1024, 2048);
+        stats.record_file_success(100, 1024, 2048, StdDuration::from_millis(50));
         let first = stats.first_file_at().unwrap();
         let last1 = stats.last_file_at().unwrap();
 
@@ -479,24 +556,30 @@ mod tests {
         sleep(StdDuration::from_millis(10));
 
         // Process second file
-        stats.record_file_success(200, 2048, 4096);
+        stats.record_file_success(200, 2048, 4096, StdDuration::from_millis(75));
         let last2 = stats.last_file_at().unwrap();
 
         // First should not change, last should be updated
         assert_eq!(stats.first_file_at().unwrap(), first);
         assert!(last2 > first);
 
-        // Active duration should be positive
+        // Active duration (wall clock) should be positive and >= 10ms (the sleep)
         let active = stats.active_duration().unwrap();
         assert!(active.num_milliseconds() >= 10);
+
+        // Cumulative processing time should be 125ms (50 + 75)
+        assert_eq!(
+            stats.cumulative_processing_time(),
+            StdDuration::from_millis(125)
+        );
     }
 
     #[test]
     fn test_snapshot_includes_active_duration() {
         let stats = WorkerStats::new();
-        stats.record_file_success(100, 1024, 2048);
+        stats.record_file_success(100, 1024, 2048, StdDuration::from_millis(50));
         sleep(StdDuration::from_millis(10));
-        stats.record_file_success(200, 2048, 4096);
+        stats.record_file_success(200, 2048, 4096, StdDuration::from_millis(75));
 
         let snapshot = stats.snapshot();
 
@@ -504,6 +587,24 @@ mod tests {
         assert!(snapshot.last_file_at.is_some());
         assert!(snapshot.active_duration().is_some());
         assert!(snapshot.active_duration_secs().unwrap() >= 0.01);
+        // Cumulative time is 125ms = 0.125s
+        assert!((snapshot.cumulative_processing_time_secs() - 0.125).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_throughput_uses_cumulative_time() {
+        let stats = WorkerStats::new();
+        // Process 1000 records in 100ms of actual processing time
+        stats.record_file_success(1000, 1_000_000, 0, StdDuration::from_millis(100));
+
+        // Throughput should be based on cumulative time (100ms), not wall clock
+        let records_per_sec = stats.records_per_second().unwrap();
+        // 1000 records / 0.1s = 10000 records/sec
+        assert!((records_per_sec - 10000.0).abs() < 1.0);
+
+        let mbps = stats.read_throughput_mbps().unwrap();
+        // 1MB / 0.1s = 10 MB/s
+        assert!((mbps - 10.0).abs() < 0.1);
     }
 
     #[test]
