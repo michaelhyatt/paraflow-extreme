@@ -15,10 +15,10 @@ START_TIME=$(date +%s)
 
 exec > >(tee -a /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1
 
-# Auto-detect CPU cores for thread count (use configured value of 0 means auto)
+# Auto-detect CPU cores for thread count (0 = auto as 2× CPU cores)
 CONFIGURED_THREADS="${worker_threads}"
 if [ "$CONFIGURED_THREADS" -eq 0 ] || [ "$CONFIGURED_THREADS" = "auto" ]; then
-    WORKER_THREADS=$(nproc)
+    WORKER_THREADS=$(($(nproc) * 2))
 else
     WORKER_THREADS="$CONFIGURED_THREADS"
 fi

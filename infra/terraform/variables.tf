@@ -157,7 +157,7 @@ variable "worker_count" {
 }
 
 variable "worker_threads" {
-  description = "Number of processing threads for worker (0 = auto-detect from CPU cores)"
+  description = "Number of processing threads for worker (0 = auto-detect as 2× CPU cores)"
   type        = number
   default     = 0
 }
@@ -165,7 +165,7 @@ variable "worker_threads" {
 variable "batch_size" {
   description = "Batch size for record processing"
   type        = number
-  default     = 10000
+  default     = 50000
 }
 
 variable "prefetch_count" {
