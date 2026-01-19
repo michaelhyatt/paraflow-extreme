@@ -80,12 +80,13 @@ pub struct Cli {
     pub output_format: OutputFormat,
 
     // === Processing ===
-    /// Number of processing threads (must be >= 1)
-    #[arg(short = 't', long, default_value_t = num_cpus(), value_parser = parse_positive_usize)]
+    /// Number of processing threads.
+    /// Default (0) auto-detects as 2× CPU cores for optimal throughput.
+    #[arg(short = 't', long, default_value = "0")]
     pub threads: usize,
 
     /// Batch size for reading files (must be >= 1)
-    #[arg(long, default_value = "10000", value_parser = parse_positive_usize)]
+    #[arg(long, default_value = "50000", value_parser = parse_positive_usize)]
     pub batch_size: usize,
 
     /// Maximum retries before moving to DLQ
@@ -115,12 +116,12 @@ pub struct Cli {
     /// Maximum files to prefetch per thread.
     /// Higher values improve throughput by keeping more files ready for processing.
     /// Set to 0 to disable prefetching.
-    #[arg(long, default_value = "2", value_name = "COUNT")]
+    #[arg(long, default_value = "6", value_name = "COUNT")]
     pub prefetch_count: usize,
 
     /// Memory budget per thread for prefetch in MB.
     /// The prefetcher will not start new prefetches if it would exceed this limit.
-    #[arg(long, default_value = "30", value_name = "MB")]
+    #[arg(long, default_value = "200", value_name = "MB")]
     pub prefetch_memory_mb: usize,
 
     // === AWS Configuration ===
@@ -217,13 +218,6 @@ impl From<OutputFormat> for pf_worker::destination::OutputFormat {
             OutputFormat::Json => pf_worker::destination::OutputFormat::Json,
         }
     }
-}
-
-/// Get the number of available CPUs.
-fn num_cpus() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
 }
 
 /// Parse a positive usize (>= 1).

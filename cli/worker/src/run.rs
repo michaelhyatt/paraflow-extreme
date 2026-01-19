@@ -56,9 +56,19 @@ pub async fn execute(args: Cli) -> Result<pf_worker::stats::StatsSnapshot> {
             .with_max_memory_bytes(args.prefetch_memory_mb * 1024 * 1024)
     };
 
+    // Auto-detect thread count if set to 0 (default)
+    // Use 2× CPU cores for optimal throughput
+    let thread_count = if args.threads == 0 {
+        std::thread::available_parallelism()
+            .map(|n| n.get() * 2)
+            .unwrap_or(2)
+    } else {
+        args.threads
+    };
+
     // Build worker configuration
     let config = WorkerConfig::new()
-        .with_thread_count(args.threads)
+        .with_thread_count(thread_count)
         .with_batch_size(args.batch_size)
         .with_max_retries(args.max_retries)
         .with_channel_buffer(args.channel_buffer)
