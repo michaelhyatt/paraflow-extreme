@@ -1196,6 +1196,16 @@ deploy() {
     fi
 
     # =========================================================================
+    # Clean up stale SSM parameters BEFORE deploying discoverer
+    # This must happen before Phase 1 to avoid race condition where
+    # cleanup deletes the parameter after discoverer sets it.
+    # =========================================================================
+    log_info "Cleaning up stale SSM parameters from previous runs..."
+    local job_id_for_cleanup
+    job_id_for_cleanup=$(grep '^job_id' example.tfvars 2>/dev/null | sed 's/.*=.*"\(.*\)".*/\1/' || echo "noaa-ghcn-job")
+    aws ssm delete-parameter --name "/paraflow/$job_id_for_cleanup/discoverer-done" --region "$AWS_REGION" 2>/dev/null || true
+
+    # =========================================================================
     # PHASE 1: Deploy discoverer only (worker_count=0)
     # =========================================================================
     echo ""
@@ -1245,9 +1255,8 @@ EOF
     log_info "  SQS Queue: $SQS_QUEUE_URL"
     log_info "  Discoverer Instance: $DISCOVERER_INSTANCE_ID"
 
-    # Clean up any stale SSM parameter from previous runs
-    log_info "Cleaning up stale SSM parameters from previous runs..."
-    aws ssm delete-parameter --name "/paraflow/$JOB_ID/discoverer-done" --region "$AWS_REGION" 2>/dev/null || true
+    # NOTE: SSM parameter cleanup now happens BEFORE Phase 1 (see above)
+    # to avoid race condition where cleanup deletes parameter after discoverer sets it.
 
     # =========================================================================
     # Wait for discoverer to populate the queue
