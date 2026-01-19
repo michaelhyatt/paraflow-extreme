@@ -141,83 +141,18 @@ collect_profiling_artifacts() {
     # Capture final docker stats
     docker stats --no-stream --format "{{json .}}" > $ARTIFACTS_DIR/docker-stats.json 2>/dev/null || true
 
-    #---------------------------------------------------------------------------
-    # TROUBLESHOOTING DATA CAPTURE
-    #---------------------------------------------------------------------------
+    # Container and system logs
+    docker logs pf-worker > $ARTIFACTS_DIR/container.log 2>&1 || true
+    docker inspect pf-worker > $ARTIFACTS_DIR/inspect.json 2>/dev/null || true
+    mkdir -p $ARTIFACTS_DIR/os
+    journalctl --since "1 hour ago" --no-pager > $ARTIFACTS_DIR/os/journal.log 2>/dev/null || true
+    dmesg -T > $ARTIFACTS_DIR/os/dmesg.log 2>/dev/null || true
+    cp /var/log/cloud-init*.log $ARTIFACTS_DIR/os/ 2>/dev/null || true
+    ps auxf > $ARTIFACTS_DIR/ps.txt 2>/dev/null || true
+    cat /proc/meminfo > $ARTIFACTS_DIR/mem.txt 2>/dev/null || true
 
-    # Container logs (stdout/stderr from pf-worker)
-    echo "Collecting container logs..."
-    docker logs pf-worker > $ARTIFACTS_DIR/container-stdout.log 2> $ARTIFACTS_DIR/container-stderr.log || true
-
-    # Docker inspect for container metadata and state
-    docker inspect pf-worker > $ARTIFACTS_DIR/container-inspect.json 2>/dev/null || true
-
-    # OS-level logs
-    echo "Collecting OS logs..."
-    mkdir -p $ARTIFACTS_DIR/os-logs
-
-    # System journal (recent entries)
-    journalctl --since "1 hour ago" --no-pager > $ARTIFACTS_DIR/os-logs/journal-1h.log 2>/dev/null || true
-
-    # Docker daemon logs
-    journalctl -u docker --since "1 hour ago" --no-pager > $ARTIFACTS_DIR/os-logs/docker-daemon.log 2>/dev/null || true
-
-    # Kernel messages (dmesg) - useful for OOM kills, hardware issues
-    dmesg -T > $ARTIFACTS_DIR/os-logs/dmesg.log 2>/dev/null || true
-
-    # Cloud-init logs (EC2 user-data execution)
-    cp /var/log/cloud-init.log $ARTIFACTS_DIR/os-logs/ 2>/dev/null || true
-    cp /var/log/cloud-init-output.log $ARTIFACTS_DIR/os-logs/ 2>/dev/null || true
-
-    # Key system logs
-    echo "Collecting key system logs..."
-    cp /var/log/messages $ARTIFACTS_DIR/os-logs/ 2>/dev/null || true
-    cp /var/log/secure $ARTIFACTS_DIR/os-logs/ 2>/dev/null || true
-
-    # ECS agent logs (if using ECS)
-    cp -r /var/log/ecs $ARTIFACTS_DIR/os-logs/ 2>/dev/null || true
-
-    # Process state at collection time
-    echo "Collecting process state..."
-    ps auxf > $ARTIFACTS_DIR/process-tree.txt 2>/dev/null || true
-    top -bn1 > $ARTIFACTS_DIR/top-snapshot.txt 2>/dev/null || true
-
-    # Network state
-    ss -tuanp > $ARTIFACTS_DIR/network-connections.txt 2>/dev/null || true
-
-    # Memory details
-    cat /proc/meminfo > $ARTIFACTS_DIR/meminfo.txt 2>/dev/null || true
-    cat /proc/vmstat > $ARTIFACTS_DIR/vmstat.txt 2>/dev/null || true
-
-    # I/O statistics
-    iostat -x 1 3 > $ARTIFACTS_DIR/iostat.txt 2>/dev/null || true
-
-    #---------------------------------------------------------------------------
-    # END TROUBLESHOOTING DATA CAPTURE
-    #---------------------------------------------------------------------------
-
-    # System information
-    {
-        echo "=== Instance Info ==="
-        echo "Instance ID: $(curl -s http://169.254.169.254/latest/meta-data/instance-id)"
-        echo "Instance Type: $(curl -s http://169.254.169.254/latest/meta-data/instance-type)"
-        echo "Availability Zone: $(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone)"
-        echo ""
-        echo "=== CPU Info ==="
-        lscpu | grep -E "^(Architecture|CPU\(s\)|Model name|CPU max MHz)"
-        echo ""
-        echo "=== Memory Info ==="
-        free -h
-        echo ""
-        echo "=== Disk Info ==="
-        df -h /
-        echo ""
-        echo "=== Uptime ==="
-        uptime
-        echo ""
-        echo "=== Kernel Version ==="
-        uname -a
-    } > $ARTIFACTS_DIR/system-info.txt
+    # System info
+    { curl -s http://169.254.169.254/latest/meta-data/instance-type; echo; lscpu | head -5; free -h; df -h /; } > $ARTIFACTS_DIR/sys.txt 2>/dev/null || true
 
     # Create tarball with human-readable datetime
     DATETIME=$(date +%Y%m%d-%H%M%S)
