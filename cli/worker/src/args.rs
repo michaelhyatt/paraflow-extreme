@@ -94,6 +94,11 @@ pub struct Cli {
     #[arg(long, default_value = "30", value_parser = clap::value_parser!(u64).range(1..))]
     pub shutdown_timeout: u64,
 
+    /// Column projection for Parquet files (comma-separated list of column names).
+    /// Only the specified columns will be read, reducing I/O for wide schemas.
+    #[arg(long, value_delimiter = ',', value_name = "COLUMNS")]
+    pub columns: Option<Vec<String>>,
+
     // === Prefetch Configuration ===
     /// Maximum files to prefetch per thread.
     /// Higher values improve throughput by keeping more files ready for processing.

@@ -100,6 +100,11 @@ pub async fn execute(args: Cli) -> Result<pf_worker::stats::StatsSnapshot> {
         reader_config = reader_config.with_credentials(access_key, secret_key, session_token);
     }
 
+    // Pass column projection for Parquet files
+    if let Some(ref columns) = args.columns {
+        reader_config = reader_config.with_projection(columns.clone());
+    }
+
     let reader = FormatDispatchReader::new(reader_config).await?;
 
     // Execute based on input type

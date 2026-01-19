@@ -28,6 +28,10 @@ pub struct ReaderFactoryConfig {
 
     /// Optional AWS session token (for temporary credentials)
     pub session_token: Option<String>,
+
+    /// Optional column projection for Parquet files.
+    /// If set, only the specified columns will be read.
+    pub projection: Option<Vec<String>>,
 }
 
 impl ReaderFactoryConfig {
@@ -40,6 +44,7 @@ impl ReaderFactoryConfig {
             access_key: None,
             secret_key: None,
             session_token: None,
+            projection: None,
         }
     }
 
@@ -65,6 +70,15 @@ impl ReaderFactoryConfig {
         self.access_key = Some(access_key.into());
         self.secret_key = Some(secret_key.into());
         self.session_token = session_token;
+        self
+    }
+
+    /// Set column projection for Parquet files.
+    ///
+    /// Only the specified columns will be read from Parquet files,
+    /// reducing I/O and improving performance for wide schemas.
+    pub fn with_projection(mut self, columns: Vec<String>) -> Self {
+        self.projection = Some(columns);
         self
     }
 }
@@ -95,6 +109,10 @@ impl ReaderFactory {
 
                 if let (Some(ak), Some(sk)) = (&self.config.access_key, &self.config.secret_key) {
                     config = config.with_credentials(ak, sk, self.config.session_token.clone());
+                }
+
+                if let Some(ref columns) = self.config.projection {
+                    config = config.with_projection(columns.clone());
                 }
 
                 let reader = ParquetReader::new(config).await?;

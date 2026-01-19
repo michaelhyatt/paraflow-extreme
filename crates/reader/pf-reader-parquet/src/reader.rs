@@ -11,6 +11,7 @@ use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
 use object_store::local::LocalFileSystem;
 use object_store::path::Path as ObjectPath;
+use parquet::arrow::ProjectionMask;
 use parquet::arrow::async_reader::{ParquetObjectReader, ParquetRecordBatchStreamBuilder};
 use pf_error::{PfError, ReaderError, Result};
 use pf_traits::{BatchStream, FileMetadata, StreamingReader};
@@ -40,6 +41,10 @@ pub struct ParquetReaderConfig {
 
     /// Optional AWS session token (for temporary credentials)
     pub session_token: Option<String>,
+
+    /// Optional column projection (list of column names to read).
+    /// If None, all columns are read.
+    pub projection: Option<Vec<String>>,
 }
 
 impl ParquetReaderConfig {
@@ -52,6 +57,7 @@ impl ParquetReaderConfig {
             access_key: None,
             secret_key: None,
             session_token: None,
+            projection: None,
         }
     }
 
@@ -77,6 +83,15 @@ impl ParquetReaderConfig {
         self.access_key = Some(access_key.into());
         self.secret_key = Some(secret_key.into());
         self.session_token = session_token;
+        self
+    }
+
+    /// Set column projection (list of column names to read).
+    ///
+    /// Only the specified columns will be read from the Parquet file,
+    /// reducing I/O and improving performance for wide schemas.
+    pub fn with_projection(mut self, columns: Vec<String>) -> Self {
+        self.projection = Some(columns);
         self
     }
 }
@@ -295,6 +310,43 @@ impl StreamingReader for ParquetReader {
 
         let batch_size = self.config.batch_size;
         let uri_clone = uri.to_string();
+
+        // Apply column projection if specified
+        let builder = if let Some(ref columns) = self.config.projection {
+            let parquet_schema = builder.parquet_schema();
+            let arrow_schema = builder.schema();
+
+            // Build projection mask from column names
+            let indices: Vec<usize> = columns
+                .iter()
+                .filter_map(|col_name| {
+                    arrow_schema
+                        .fields()
+                        .iter()
+                        .position(|f| f.name() == col_name)
+                })
+                .collect();
+
+            if indices.is_empty() {
+                debug!(
+                    uri = uri,
+                    requested_columns = ?columns,
+                    "No matching columns found for projection, reading all columns"
+                );
+                builder
+            } else {
+                debug!(
+                    uri = uri,
+                    projected_columns = indices.len(),
+                    total_columns = arrow_schema.fields().len(),
+                    "Applying column projection"
+                );
+                let projection = ProjectionMask::roots(parquet_schema, indices);
+                builder.with_projection(projection)
+            }
+        } else {
+            builder
+        };
 
         debug!(
             uri = uri,
@@ -554,6 +606,76 @@ mod tests {
                 1,
                 "Cache should still have one entry after second read (store reused)"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_column_projection() {
+        let file = create_test_parquet_file(100);
+        let path = file.path().to_str().unwrap();
+
+        // Read with projection - only "id" column
+        let config = ParquetReaderConfig::new("local").with_projection(vec!["id".to_string()]);
+        let reader = ParquetReader {
+            config,
+            store_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+        };
+
+        let mut stream = reader.read_stream(path).await.unwrap();
+
+        let mut total_rows = 0;
+        while let Some(batch_result) = stream.next().await {
+            let batch = batch_result.unwrap();
+            total_rows += batch.num_rows();
+            // Should only have 1 column (id), not 2
+            assert_eq!(batch.num_columns(), 1);
+            assert_eq!(batch.schema().field(0).name(), "id");
+        }
+
+        assert_eq!(total_rows, 100);
+    }
+
+    #[tokio::test]
+    async fn test_column_projection_multiple_columns() {
+        let file = create_test_parquet_file(50);
+        let path = file.path().to_str().unwrap();
+
+        // Read with projection - both columns (should be same as no projection)
+        let config = ParquetReaderConfig::new("local")
+            .with_projection(vec!["id".to_string(), "name".to_string()]);
+        let reader = ParquetReader {
+            config,
+            store_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+        };
+
+        let mut stream = reader.read_stream(path).await.unwrap();
+
+        while let Some(batch_result) = stream.next().await {
+            let batch = batch_result.unwrap();
+            // Should have both columns
+            assert_eq!(batch.num_columns(), 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_column_projection_nonexistent_column() {
+        let file = create_test_parquet_file(50);
+        let path = file.path().to_str().unwrap();
+
+        // Read with projection - column that doesn't exist
+        let config =
+            ParquetReaderConfig::new("local").with_projection(vec!["nonexistent".to_string()]);
+        let reader = ParquetReader {
+            config,
+            store_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+        };
+
+        let mut stream = reader.read_stream(path).await.unwrap();
+
+        while let Some(batch_result) = stream.next().await {
+            let batch = batch_result.unwrap();
+            // Should fall back to all columns since no match
+            assert_eq!(batch.num_columns(), 2);
         }
     }
 }
