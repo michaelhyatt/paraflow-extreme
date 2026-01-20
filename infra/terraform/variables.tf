@@ -123,9 +123,9 @@ variable "filter" {
 # ============================================================================
 
 variable "sqs_visibility_timeout" {
-  description = "SQS visibility timeout in seconds"
+  description = "SQS visibility timeout in seconds. Should accommodate prefetch buffer depth (prefetch_count × worker_threads) times worst-case file processing time."
   type        = number
-  default     = 300 # 5 minutes
+  default     = 600 # 10 minutes - increased to prevent message redelivery during drain mode with deep prefetch buffers
 }
 
 variable "sqs_message_retention_seconds" {

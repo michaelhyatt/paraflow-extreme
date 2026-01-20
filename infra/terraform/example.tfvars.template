@@ -44,7 +44,7 @@ batch_size     = 10000  # Records per batch
 # ============================================================================
 # SQS Configuration
 # ============================================================================
-sqs_visibility_timeout = 300  # 5 minutes
+sqs_visibility_timeout = 600  # 10 minutes - increased for deep prefetch buffers
 sqs_max_receive_count  = 3    # Retries before DLQ
 
 # ============================================================================

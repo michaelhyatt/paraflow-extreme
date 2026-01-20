@@ -34,7 +34,10 @@ worker_threads = 0 # 0 = auto-detect from CPU cores
 batch_size     = 50000
 
 # SQS Configuration
-sqs_visibility_timeout = 300 # 5 minutes
+# Visibility timeout must accommodate prefetch buffer depth during drain mode:
+# With prefetch_count=6 and 16 threads, up to 96 messages can be buffered.
+# At worst-case 12s/file processing (network delays), we need ~10 minutes headroom.
+sqs_visibility_timeout = 600 # 10 minutes (increased from 5 to prevent redeliveries during drain)
 sqs_max_receive_count  = 3   # Retries before DLQ
 
 # CloudWatch Logs
