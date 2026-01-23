@@ -222,3 +222,19 @@ variable "prepopulate_queue" {
   type        = bool
   default     = false
 }
+
+# ============================================================================
+# Step Functions Configuration
+# ============================================================================
+
+variable "enable_step_functions" {
+  description = "Enable Step Functions integration for orchestrating discoverer and worker tasks"
+  type        = bool
+  default     = false
+}
+
+variable "step_functions_state_machine_arn" {
+  description = "ARN of the Step Functions state machine (required if enable_step_functions=true)"
+  type        = string
+  default     = ""
+}

@@ -142,6 +142,19 @@ resource "aws_iam_role_policy" "paraflow" {
             "arn:aws:s3:::${var.artifacts_bucket}/profiling/*"
           ]
         }
+      ] : [],
+      # Step Functions - task callbacks for workflow orchestration
+      var.enable_step_functions ? [
+        {
+          Sid    = "StepFunctionsTaskCallbacks"
+          Effect = "Allow"
+          Action = [
+            "states:SendTaskSuccess",
+            "states:SendTaskFailure",
+            "states:SendTaskHeartbeat"
+          ]
+          Resource = var.step_functions_state_machine_arn != "" ? var.step_functions_state_machine_arn : "arn:aws:states:${var.aws_region}:${data.aws_caller_identity.current.account_id}:stateMachine:*"
+        }
     ] : [])
   })
 }
