@@ -182,6 +182,14 @@ pub struct Cli {
     /// Each snapshot captures 10 seconds of activity.
     #[arg(long, default_value = "60", value_name = "SECS")]
     pub profile_interval: u64,
+
+    // === Job Identification ===
+    /// Unique identifier for the job.
+    ///
+    /// Used for metrics, logging, and coordinating with orchestration systems.
+    /// This ID is added as a dimension to all metrics emitted by the worker.
+    #[arg(long, env = "PF_JOB_ID")]
+    pub job_id: Option<String>,
 }
 
 /// Input source type.
