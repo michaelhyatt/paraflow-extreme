@@ -5,11 +5,12 @@ use futures::{StreamExt, pin_mut};
 use pf_discoverer::filter::parse_date;
 use pf_discoverer::partition::{PartitionFilters, PartitioningExpression, expand_all_prefixes};
 use pf_discoverer::{
-    CompositeFilter, DateFilter, DiscoveredFile, DiscoveryConfig, DiscoveryStats, Filter, Output,
-    ParallelConfig, ParallelLister, PatternFilter, S3Config, SizeFilter, SqsConfig, SqsOutput,
-    StdoutOutput, StepFunctionsCallback, StepFunctionsConfig, create_s3_client,
+    CompositeFilter, DateFilter, DiscoveredFile, DiscoveryConfig, DiscoveryStats, Filter,
+    HeartbeatLoop, Output, ParallelConfig, ParallelLister, PatternFilter, S3Config, SizeFilter,
+    SqsConfig, SqsOutput, StdoutOutput, StepFunctionsCallback, StepFunctionsConfig, create_s3_client,
 };
 use serde::Serialize;
+use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 use crate::args::{Cli, DestinationType};
@@ -50,8 +51,25 @@ pub async fn execute(args: Cli) -> Result<DiscoveryStats> {
     // Initialize Step Functions callback if task token is provided
     let sfn_callback = StepFunctionsCallback::new(&sfn_config).await?;
 
+    // Start heartbeat loop if Step Functions is enabled
+    let heartbeat_loop = if let Some(ref callback) = sfn_callback {
+        let heartbeat = HeartbeatLoop::start(
+            callback.client(),
+            callback.task_token().to_string(),
+            Duration::from_secs(sfn_config.heartbeat_interval_secs),
+        );
+        Some(heartbeat)
+    } else {
+        None
+    };
+
     // Run discovery with Step Functions error handling
     let result = run_discovery_inner(&args).await;
+
+    // Stop heartbeat loop before sending final callback
+    if let Some(heartbeat) = heartbeat_loop {
+        heartbeat.stop().await;
+    }
 
     // Handle Step Functions callbacks
     match (&result, &sfn_callback) {

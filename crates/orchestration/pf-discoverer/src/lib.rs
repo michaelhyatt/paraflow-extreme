@@ -64,7 +64,7 @@ pub use output::{Output, OutputFormat, SqsConfig, SqsOutput, StdoutOutput};
 pub use s3::{
     ParallelConfig, ParallelLister, RetryConfig, S3Config, S3Object, create_s3_client, list_objects,
 };
-pub use sfn::{StepFunctionsCallback, StepFunctionsConfig};
+pub use sfn::{HeartbeatLoop, StepFunctionsCallback, StepFunctionsConfig};
 pub use stats::DiscoveryStats;
 
 /// A discovered file from S3.

@@ -8,7 +8,16 @@ use aws_config::BehaviorVersion;
 use aws_sdk_sfn::Client as SfnClient;
 use pf_error::{PfError, Result};
 use serde::Serialize;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
+
+/// Default heartbeat interval in seconds.
+/// Step Functions tasks typically have a 5-10 minute timeout,
+/// so sending heartbeats every 30 seconds provides good coverage.
+pub const DEFAULT_HEARTBEAT_INTERVAL_SECS: u64 = 30;
 
 /// Configuration for Step Functions integration.
 #[derive(Debug, Clone)]
@@ -22,6 +31,9 @@ pub struct StepFunctionsConfig {
 
     /// Custom endpoint URL (for LocalStack/testing).
     pub endpoint: Option<String>,
+
+    /// Heartbeat interval in seconds.
+    pub heartbeat_interval_secs: u64,
 }
 
 impl StepFunctionsConfig {
@@ -31,6 +43,7 @@ impl StepFunctionsConfig {
             task_token,
             region: None,
             endpoint: None,
+            heartbeat_interval_secs: DEFAULT_HEARTBEAT_INTERVAL_SECS,
         }
     }
 
@@ -43,6 +56,12 @@ impl StepFunctionsConfig {
     /// Set a custom endpoint (for LocalStack/testing).
     pub fn with_endpoint(mut self, endpoint: impl Into<String>) -> Self {
         self.endpoint = Some(endpoint.into());
+        self
+    }
+
+    /// Set the heartbeat interval in seconds.
+    pub fn with_heartbeat_interval(mut self, interval_secs: u64) -> Self {
+        self.heartbeat_interval_secs = interval_secs;
         self
     }
 
@@ -132,6 +151,81 @@ impl StepFunctionsCallback {
     /// Get a clone of the SFN client for use in heartbeat loop.
     pub fn client(&self) -> SfnClient {
         self.client.clone()
+    }
+}
+
+/// Heartbeat loop for long-running Step Functions tasks.
+///
+/// Sends periodic heartbeats to Step Functions to prevent task timeout.
+/// The loop runs in the background and should be stopped when the task completes.
+pub struct HeartbeatLoop {
+    stop_flag: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl HeartbeatLoop {
+    /// Start a new heartbeat loop.
+    ///
+    /// # Arguments
+    ///
+    /// * `client` - The Step Functions client
+    /// * `task_token` - The task token to send heartbeats for
+    /// * `interval` - The interval between heartbeats
+    pub fn start(client: SfnClient, task_token: String, interval: Duration) -> Self {
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let stop_clone = Arc::clone(&stop_flag);
+
+        info!(
+            interval_secs = interval.as_secs(),
+            "Starting Step Functions heartbeat loop"
+        );
+
+        let handle = tokio::spawn(async move {
+            let mut interval_timer = tokio::time::interval(interval);
+            interval_timer.tick().await; // Skip first immediate tick
+
+            loop {
+                interval_timer.tick().await;
+
+                if stop_clone.load(Ordering::Relaxed) {
+                    debug!("Heartbeat loop stopping");
+                    break;
+                }
+
+                match client
+                    .send_task_heartbeat()
+                    .task_token(&task_token)
+                    .send()
+                    .await
+                {
+                    Ok(_) => {
+                        debug!("Step Functions heartbeat sent");
+                    }
+                    Err(e) => {
+                        // Log but don't fail - the task may have already completed
+                        // or the workflow may have been cancelled
+                        warn!(error = %e, "Failed to send Step Functions heartbeat");
+                    }
+                }
+            }
+        });
+
+        Self {
+            stop_flag,
+            handle: Some(handle),
+        }
+    }
+
+    /// Stop the heartbeat loop.
+    pub async fn stop(mut self) {
+        self.stop_flag.store(true, Ordering::Relaxed);
+
+        if let Some(handle) = self.handle.take() {
+            // Wait for the loop to finish (with a timeout)
+            let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+        }
+
+        info!("Step Functions heartbeat loop stopped");
     }
 }
 
