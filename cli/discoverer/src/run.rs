@@ -5,11 +5,14 @@ use futures::{StreamExt, pin_mut};
 use pf_discoverer::filter::parse_date;
 use pf_discoverer::partition::{PartitionFilters, PartitioningExpression, expand_all_prefixes};
 use pf_discoverer::{
-    CompositeFilter, DateFilter, DiscoveredFile, DiscoveryConfig, DiscoveryStats, Filter, Output,
-    ParallelConfig, ParallelLister, PatternFilter, S3Config, SizeFilter, SqsConfig, SqsOutput,
-    StdoutOutput, create_s3_client,
+    CompositeFilter, DateFilter, DiscoveredFile, DiscoveryConfig, DiscoveryStats, Filter,
+    HeartbeatLoop, Output, ParallelConfig, ParallelLister, PatternFilter, S3Config, SizeFilter,
+    SqsConfig, SqsOutput, StdoutOutput, StepFunctionsCallback, StepFunctionsConfig,
+    create_s3_client,
 };
-use tracing::{debug, info, warn};
+use serde::Serialize;
+use std::time::Duration;
+use tracing::{debug, error, info, warn};
 
 use crate::args::{Cli, DestinationType};
 use crate::progress::ProgressReporter;
@@ -32,8 +35,72 @@ pub struct DryRunStats {
     pub samples: Vec<SampleFile>,
 }
 
+/// Output for Step Functions task success callback.
+#[derive(Debug, Serialize)]
+struct TaskSuccessOutput {
+    files_discovered: usize,
+    files_output: usize,
+    bytes_discovered: u64,
+}
+
 /// Execute the discoverer with the provided arguments.
 pub async fn execute(args: Cli) -> Result<DiscoveryStats> {
+    // Build Step Functions configuration
+    let sfn_config = StepFunctionsConfig::new(args.task_token.clone()).with_region(&args.region);
+
+    // Initialize Step Functions callback if task token is provided
+    let sfn_callback = StepFunctionsCallback::new(&sfn_config).await?;
+
+    // Start heartbeat loop if Step Functions is enabled
+    let heartbeat_loop = if let Some(ref callback) = sfn_callback {
+        let heartbeat = HeartbeatLoop::start(
+            callback.client(),
+            callback.task_token().to_string(),
+            Duration::from_secs(sfn_config.heartbeat_interval_secs),
+        );
+        Some(heartbeat)
+    } else {
+        None
+    };
+
+    // Run discovery with Step Functions error handling
+    let result = run_discovery_inner(&args).await;
+
+    // Stop heartbeat loop before sending final callback
+    if let Some(heartbeat) = heartbeat_loop {
+        heartbeat.stop().await;
+    }
+
+    // Handle Step Functions callbacks
+    match (&result, &sfn_callback) {
+        (Ok(stats), Some(callback)) => {
+            // Send success callback
+            let output = TaskSuccessOutput {
+                files_discovered: stats.files_discovered,
+                files_output: stats.files_output,
+                bytes_discovered: stats.bytes_discovered,
+            };
+            if let Err(e) = callback.send_task_success(&output).await {
+                error!(error = %e, "Failed to send Step Functions success callback");
+            }
+        }
+        (Err(e), Some(callback)) => {
+            // Send failure callback
+            if let Err(sfn_err) = callback
+                .send_task_failure("DiscoveryFailed", &e.to_string())
+                .await
+            {
+                error!(error = %sfn_err, "Failed to send Step Functions failure callback");
+            }
+        }
+        _ => {}
+    }
+
+    result
+}
+
+/// Inner discovery function that performs the actual work.
+async fn run_discovery_inner(args: &Cli) -> Result<DiscoveryStats> {
     // Build S3 configuration
     let mut s3_config = S3Config::new(&args.bucket)
         .with_region(&args.region)
@@ -63,14 +130,14 @@ pub async fn execute(args: Cli) -> Result<DiscoveryStats> {
     let config = DiscoveryConfig::new().with_max_files(args.max_files);
 
     // Build composite filter
-    let filter = build_filter(&args)?;
+    let filter = build_filter(args)?;
 
     // Build partition configuration (prefixes to scan)
-    let prefixes = build_partition_config(&args)?;
+    let prefixes = build_partition_config(args)?;
 
     // Handle dry-run mode
     if args.dry_run {
-        let dry_run_stats = run_dry_run(s3_client, &args, filter, config, prefixes).await?;
+        let dry_run_stats = run_dry_run(s3_client, args, filter, config, prefixes).await?;
         return Ok(dry_run_stats.stats);
     }
 
@@ -78,7 +145,7 @@ pub async fn execute(args: Cli) -> Result<DiscoveryStats> {
     let stats = match args.destination {
         DestinationType::Stdout => {
             let output = StdoutOutput::new(args.output_format.into());
-            run_discovery_with_prefixes(s3_client, &args, output, filter, config, prefixes).await?
+            run_discovery_with_prefixes(s3_client, args, output, filter, config, prefixes).await?
         }
         DestinationType::Sqs => {
             let sqs_queue_url = args.sqs_queue_url.as_ref().ok_or_else(|| {
@@ -94,7 +161,7 @@ pub async fn execute(args: Cli) -> Result<DiscoveryStats> {
             }
 
             let output = SqsOutput::new(sqs_config).await?;
-            run_discovery_with_prefixes(s3_client, &args, output, filter, config, prefixes).await?
+            run_discovery_with_prefixes(s3_client, args, output, filter, config, prefixes).await?
         }
     };
 

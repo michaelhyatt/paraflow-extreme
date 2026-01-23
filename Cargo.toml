@@ -53,6 +53,7 @@ aws-config = "1"
 aws-credential-types = "1"
 aws-sdk-sqs = "1"
 aws-sdk-s3 = "1"
+aws-sdk-sfn = "1"
 
 # Elasticsearch
 elasticsearch = "8"
@@ -71,6 +72,9 @@ rayon = "1.10"
 
 # Metrics
 prometheus = "0.13"
+opentelemetry = "0.27"
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio", "metrics"] }
+opentelemetry-otlp = { version = "0.27", features = ["metrics"] }
 
 # HTTP server
 axum = "0.8"

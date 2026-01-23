@@ -178,6 +178,15 @@ pub struct Cli {
     #[arg(long, default_value = "5", value_parser = clap::value_parser!(u64).range(1..))]
     pub progress_interval: u64,
 
+    // === Step Functions Integration ===
+    /// Step Functions task token for callback integration.
+    ///
+    /// When provided, the discoverer will send success/failure callbacks
+    /// to Step Functions upon completion. This enables integration with
+    /// Step Functions workflows using the "waitForTaskToken" pattern.
+    #[arg(long, env = "PF_TASK_TOKEN")]
+    pub task_token: Option<String>,
+
     // === Logging Options ===
     /// Log level
     #[arg(short = 'l', long, value_enum, default_value = "info")]

@@ -19,7 +19,7 @@ resource "aws_sqs_queue" "dlq" {
 }
 
 resource "aws_sqs_queue" "main" {
-  name                       = "paraflow-${var.job_id}"
+  name                       = "paraflow-${var.job_id}-queue"
   visibility_timeout_seconds = var.visibility_timeout
   message_retention_seconds  = var.message_retention_seconds
   receive_wait_time_seconds  = var.receive_wait_time_seconds
@@ -28,7 +28,7 @@ resource "aws_sqs_queue" "main" {
 
   tags = merge(
     {
-      Name        = "paraflow-${var.job_id}"
+      Name        = "paraflow-${var.job_id}-queue"
       JobId       = var.job_id
       Environment = var.environment
       Purpose     = "work-queue"
