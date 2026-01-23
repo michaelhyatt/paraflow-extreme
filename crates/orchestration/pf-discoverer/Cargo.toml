@@ -21,6 +21,7 @@ async-stream = "0.3"
 aws-config = { workspace = true }
 aws-sdk-s3 = { workspace = true }
 aws-sdk-sqs = { workspace = true }
+aws-sdk-sfn = { workspace = true }
 
 # Serialization
 serde = { workspace = true }

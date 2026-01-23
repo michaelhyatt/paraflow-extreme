@@ -51,6 +51,7 @@ pub mod filter;
 pub mod output;
 pub mod partition;
 pub mod s3;
+pub mod sfn;
 pub mod stats;
 
 pub use config::DiscoveryConfig;
@@ -63,6 +64,7 @@ pub use output::{Output, OutputFormat, SqsConfig, SqsOutput, StdoutOutput};
 pub use s3::{
     ParallelConfig, ParallelLister, RetryConfig, S3Config, S3Object, create_s3_client, list_objects,
 };
+pub use sfn::{StepFunctionsCallback, StepFunctionsConfig};
 pub use stats::DiscoveryStats;
 
 /// A discovered file from S3.
