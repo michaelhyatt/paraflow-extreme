@@ -4,6 +4,16 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Placeholder for pf-metrics"
+description = "OpenTelemetry metrics integration for paraflow-extreme"
 
 [dependencies]
+# OpenTelemetry
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+
+# Async
+tokio = { workspace = true }
+
+# Tracing
+tracing = { workspace = true }

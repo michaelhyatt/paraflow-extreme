@@ -72,6 +72,9 @@ rayon = "1.10"
 
 # Metrics
 prometheus = "0.13"
+opentelemetry = "0.27"
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio", "metrics"] }
+opentelemetry-otlp = { version = "0.27", features = ["metrics"] }
 
 # HTTP server
 axum = "0.8"
