@@ -21,11 +21,11 @@
 //! ```
 
 use opentelemetry::metrics::{Counter, Histogram};
-use opentelemetry::{global, KeyValue};
+use opentelemetry::{KeyValue, global};
 use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::metrics::{MeterProviderBuilder, PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::runtime;
-use opentelemetry_sdk::Resource;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
@@ -125,9 +125,10 @@ impl MetricsRecorder {
         );
 
         // Build resource with service info
-        let resource = Resource::new(vec![
-            KeyValue::new("service.name", config.service_name.clone()),
-        ]);
+        let resource = Resource::new(vec![KeyValue::new(
+            "service.name",
+            config.service_name.clone(),
+        )]);
 
         // Build meter provider with optional OTLP exporter
         let meter_provider = if let Some(endpoint) = &config.otlp_endpoint {

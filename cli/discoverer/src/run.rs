@@ -7,7 +7,8 @@ use pf_discoverer::partition::{PartitionFilters, PartitioningExpression, expand_
 use pf_discoverer::{
     CompositeFilter, DateFilter, DiscoveredFile, DiscoveryConfig, DiscoveryStats, Filter,
     HeartbeatLoop, Output, ParallelConfig, ParallelLister, PatternFilter, S3Config, SizeFilter,
-    SqsConfig, SqsOutput, StdoutOutput, StepFunctionsCallback, StepFunctionsConfig, create_s3_client,
+    SqsConfig, SqsOutput, StdoutOutput, StepFunctionsCallback, StepFunctionsConfig,
+    create_s3_client,
 };
 use serde::Serialize;
 use std::time::Duration;
@@ -45,8 +46,7 @@ struct TaskSuccessOutput {
 /// Execute the discoverer with the provided arguments.
 pub async fn execute(args: Cli) -> Result<DiscoveryStats> {
     // Build Step Functions configuration
-    let sfn_config = StepFunctionsConfig::new(args.task_token.clone())
-        .with_region(&args.region);
+    let sfn_config = StepFunctionsConfig::new(args.task_token.clone()).with_region(&args.region);
 
     // Initialize Step Functions callback if task token is provided
     let sfn_callback = StepFunctionsCallback::new(&sfn_config).await?;
@@ -86,7 +86,10 @@ pub async fn execute(args: Cli) -> Result<DiscoveryStats> {
         }
         (Err(e), Some(callback)) => {
             // Send failure callback
-            if let Err(sfn_err) = callback.send_task_failure("DiscoveryFailed", &e.to_string()).await {
+            if let Err(sfn_err) = callback
+                .send_task_failure("DiscoveryFailed", &e.to_string())
+                .await
+            {
                 error!(error = %sfn_err, "Failed to send Step Functions failure callback");
             }
         }

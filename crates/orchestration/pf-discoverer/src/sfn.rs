@@ -92,10 +92,7 @@ impl StepFunctionsCallback {
 
         info!("Step Functions callback enabled");
 
-        Ok(Some(Self {
-            client,
-            task_token,
-        }))
+        Ok(Some(Self { client, task_token }))
     }
 
     /// Send a task success callback to Step Functions.
