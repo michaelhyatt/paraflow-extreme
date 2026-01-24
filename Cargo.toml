@@ -1,18 +1,24 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/core/*",
+    # Core
+    "core/*",
+    # Adapters (to be moved)
     "crates/queue/*",
     "crates/reader/*",
     "crates/indexer/*",
     "crates/transform/*",
+    # Orchestration (to be moved to components)
     "crates/orchestration/*",
+    # Support (to be moved)
     "crates/support/*",
+    # CLI (to be moved to components)
     "cli",
     "cli/common",
     "cli/discoverer",
     "cli/worker",
     "cli/transform",
+    # Tests
     "tests/integration",
 ]
 
@@ -98,10 +104,10 @@ csv = "1.3"
 # Compression
 async-compression = { version = "0.4", features = ["tokio", "gzip", "zstd"] }
 
-# Internal crates
-pf-types = { path = "crates/core/pf-types" }
-pf-error = { path = "crates/core/pf-error" }
-pf-traits = { path = "crates/core/pf-traits" }
+# Internal crates - Core
+pf-types = { path = "core/pf-types" }
+pf-error = { path = "core/pf-error" }
+pf-traits = { path = "core/pf-traits" }
 
 # === Release Profile Optimizations ===
 # These settings significantly improve runtime performance at the cost of

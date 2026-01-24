@@ -8,8 +8,8 @@ description = "Rhai-based transform for Paraflow Extreme pipelines"
 
 [dependencies]
 # Internal crates
-pf-traits = { path = "../../core/pf-traits" }
-pf-error = { path = "../../core/pf-error" }
+pf-traits = { path = "../../../core/pf-traits" }
+pf-error = { path = "../../../core/pf-error" }
 pf-enrichment = { path = "../pf-enrichment" }
 
 # Scripting engine (sync feature for thread-safe Engine)

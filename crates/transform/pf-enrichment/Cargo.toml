@@ -8,7 +8,7 @@ description = "Enrichment tables for Paraflow Extreme transforms"
 
 [dependencies]
 # Internal crates
-pf-error = { path = "../../core/pf-error" }
+pf-error = { path = "../../../core/pf-error" }
 
 # Fast collections
 hashbrown = { workspace = true }

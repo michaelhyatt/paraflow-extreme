@@ -14,8 +14,8 @@ path = "src/main.rs"
 # Internal crates
 pf-transform = { path = "../../crates/transform/pf-transform" }
 pf-enrichment = { path = "../../crates/transform/pf-enrichment" }
-pf-traits = { path = "../../crates/core/pf-traits" }
-pf-error = { path = "../../crates/core/pf-error" }
+pf-traits = { path = "../../core/pf-traits" }
+pf-error = { path = "../../core/pf-error" }
 
 # Scripting (for validation)
 rhai = { workspace = true }
