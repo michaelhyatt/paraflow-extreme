@@ -21,10 +21,10 @@ Reader → Transform+Enrich → Indexer
 - **Dual input modes** - SQS for production, stdin for local testing
 - **Rhai transforms** - Per-record scripting with enrichment functions
 - **Enrichment tables** - ExactTable (HashMap) and CidrTable (IP trie) lookups
+- **SQS queue integration** - Full SQS support with dead-letter queues
 
 **Planned:**
 - Elasticsearch bulk indexing
-- SQS queue integration (currently stub)
 
 ### Target Performance
 
@@ -38,7 +38,7 @@ For local development, you need LocalStack running. See [testing/localstack/READ
 
 ```bash
 cd testing/localstack
-docker-compose up -d
+docker compose up -d
 ```
 
 ## Quick Start
@@ -151,7 +151,11 @@ paraflow-extreme/
 │       ├── pf-metrics/       # Prometheus metrics
 │       ├── pf-arrow-utils/   # Arrow helpers
 │       └── pf-dlq/           # DLQ processors
-├── cli/                      # CLI binary
+├── cli/
+│   ├── discoverer/           # pf-discoverer CLI binary
+│   ├── worker/               # pf-worker CLI binary
+│   ├── transform/            # pf-transform CLI binary
+│   └── common/               # Shared CLI utilities
 └── tests/                    # Integration tests
 ```
 
@@ -205,7 +209,7 @@ pf-worker --input sqs --destination stats --threads 8
 |--------|-------------|---------|
 | `--input` | Input source: `stdin` or `sqs` | `stdin` |
 | `--destination` | Output: `stdout` or `stats` | `stdout` |
-| `--threads` | Processing threads | CPU count × 2 |
+| `--threads` | Processing threads | CPU count x 2 |
 | `--batch-size` | Records per batch | 50000 |
 | `--columns` | Comma-separated columns to read (projection) | all |
 | `--filter` | Row filter predicate (e.g., `status=active`) | none |
@@ -222,7 +226,7 @@ pf-worker --input sqs --destination stats --threads 8
 cargo test --lib
 
 # Integration tests (requires LocalStack)
-cd testing/localstack && docker-compose up -d
+cd testing/localstack && docker compose up -d
 cargo test --test '*'
 ```
 

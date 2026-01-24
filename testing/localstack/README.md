@@ -7,7 +7,7 @@ This directory contains the LocalStack setup for local testing of paraflow-extre
 1. **Start LocalStack:**
    ```bash
    cd testing/localstack
-   docker-compose up -d
+   docker compose up -d
    ```
 
 2. **Wait for LocalStack to be ready:**
@@ -130,7 +130,7 @@ aws --endpoint-url=http://localhost:4566 sqs purge-queue \
 
 ```bash
 cd testing/localstack
-docker-compose down -v  # -v removes volumes
+docker compose down -v  # -v removes volumes
 ```
 
 ## Environment Variables for CLI

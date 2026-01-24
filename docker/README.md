@@ -101,7 +101,7 @@ Copy `.env.example` to `.env` and customize:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `WORKER_REPLICAS` | Number of worker containers | `3` |
-| `WORKER_THREADS` | Processing threads per worker | `0` (auto: 2× CPU) |
+| `WORKER_THREADS` | Processing threads per worker | `0` (auto: 2x CPU) |
 | `WORKER_BATCH_SIZE` | Records per batch | `50000` |
 | `WORKER_COLUMNS` | Column projection (comma-separated) | (all columns) |
 | `WORKER_FILTER` | Row filter predicate (e.g., `status=active`) | (none) |
@@ -121,6 +121,7 @@ Copy `.env.example` to `.env` and customize:
 |--------|---------|
 | `build.sh` | Build Docker images |
 | `run.sh [N]` | Run with N workers (default: 3) |
+| `release.sh` | Build optimized release images |
 | `setup-test-data.sh` | Upload sample files to LocalStack |
 
 ## Common Operations
@@ -203,6 +204,7 @@ docker/
 ├── README.md                 # This file
 ├── build.sh                  # Build helper
 ├── run.sh                    # Run helper with scaling
+├── release.sh                # Release build helper
 ├── setup-test-data.sh        # Test data setup
 └── init-localstack/
     └── 01-create-resources.sh  # LocalStack initialization
