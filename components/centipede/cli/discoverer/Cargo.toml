@@ -27,7 +27,7 @@ aws-sdk-s3 = { workspace = true }
 # Internal
 pf-types = { workspace = true }
 pf-error = { workspace = true }
-pf-discoverer = { path = "../../crates/orchestration/pf-discoverer" }
+pf-discoverer = { path = "../../discoverer" }
 pf-cli-common = { path = "../common" }
 
 # Serialization

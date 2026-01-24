@@ -1,19 +1,28 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/core/*",
-    "crates/queue/*",
-    "crates/reader/*",
-    "crates/indexer/*",
-    "crates/transform/*",
-    "crates/orchestration/*",
-    "crates/support/*",
-    "cli",
-    "cli/common",
-    "cli/discoverer",
-    "cli/worker",
-    "cli/transform",
-    "tests/integration",
+    # Core
+    "core/*",
+    # Adapters - Queue
+    "adapters/queue/*",
+    # Adapters - Reader
+    "adapters/reader/*",
+    # Adapters - Indexer
+    "adapters/indexer/*",
+    # Adapters - Transform
+    "adapters/transform/*",
+    # Support
+    "support/*",
+    # Components - Centipede
+    "components/centipede/discoverer",
+    "components/centipede/worker",
+    "components/centipede/file-processor",
+    "components/centipede/cli",
+    "components/centipede/cli/common",
+    "components/centipede/cli/discoverer",
+    "components/centipede/cli/worker",
+    "components/centipede/cli/transform",
+    "components/centipede/tests/integration",
 ]
 
 [workspace.package]
@@ -98,10 +107,10 @@ csv = "1.3"
 # Compression
 async-compression = { version = "0.4", features = ["tokio", "gzip", "zstd"] }
 
-# Internal crates
-pf-types = { path = "crates/core/pf-types" }
-pf-error = { path = "crates/core/pf-error" }
-pf-traits = { path = "crates/core/pf-traits" }
+# Internal crates - Core
+pf-types = { path = "core/pf-types" }
+pf-error = { path = "core/pf-error" }
+pf-traits = { path = "core/pf-traits" }
 
 # === Release Profile Optimizations ===
 # These settings significantly improve runtime performance at the cost of

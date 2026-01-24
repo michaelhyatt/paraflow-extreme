@@ -1,0 +1,32 @@
+name: centipede
+version: 1.0.0
+description: High-throughput S3-to-Elasticsearch data pipeline
+
+binaries:
+  - name: pf-discoverer
+    path: cli/discoverer
+    description: S3 file discovery service
+  - name: pf-worker
+    path: cli/worker
+    description: High-throughput data processing worker
+  - name: pf-transform
+    path: cli/transform
+    description: Transform testing utility
+
+services:
+  - name: discoverer
+    binary: pf-discoverer
+    docker: docker/Dockerfile
+  - name: worker
+    binary: pf-worker
+    docker: docker/Dockerfile
+
+required_adapters:
+  - pf-queue-sqs
+  - pf-reader-parquet
+  - pf-indexer-es
+
+optional_adapters:
+  - pf-reader-ndjson
+  - pf-queue-memory
+  - pf-indexer-stdout
