@@ -13,16 +13,16 @@ members = [
     "adapters/transform/*",
     # Support
     "support/*",
-    # Orchestration (to be moved to components)
-    "crates/orchestration/*",
-    # CLI (to be moved to components)
-    "cli",
-    "cli/common",
-    "cli/discoverer",
-    "cli/worker",
-    "cli/transform",
-    # Tests
-    "tests/integration",
+    # Components - Centipede
+    "components/centipede/discoverer",
+    "components/centipede/worker",
+    "components/centipede/file-processor",
+    "components/centipede/cli",
+    "components/centipede/cli/common",
+    "components/centipede/cli/discoverer",
+    "components/centipede/cli/worker",
+    "components/centipede/cli/transform",
+    "components/centipede/tests/integration",
 ]
 
 [workspace.package]

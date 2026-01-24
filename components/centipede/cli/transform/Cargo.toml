@@ -12,10 +12,10 @@ path = "src/main.rs"
 
 [dependencies]
 # Internal crates
-pf-transform = { path = "../../adapters/transform/pf-transform" }
-pf-enrichment = { path = "../../adapters/transform/pf-enrichment" }
-pf-traits = { path = "../../core/pf-traits" }
-pf-error = { path = "../../core/pf-error" }
+pf-transform = { path = "../../../../adapters/transform/pf-transform" }
+pf-enrichment = { path = "../../../../adapters/transform/pf-enrichment" }
+pf-traits = { path = "../../../../core/pf-traits" }
+pf-error = { path = "../../../../core/pf-error" }
 
 # Scripting (for validation)
 rhai = { workspace = true }
