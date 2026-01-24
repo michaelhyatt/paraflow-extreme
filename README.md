@@ -125,38 +125,38 @@ Run `pf-discoverer --help` and `pf-worker --help` (or `cargo run -p pf-discovere
 
 ```
 paraflow-extreme/
-├── crates/
-│   ├── core/
-│   │   ├── pf-types/       # Core types (WorkItem, Batch, Checkpoint)
-│   │   ├── pf-error/       # Error types and classification
-│   │   └── pf-traits/      # Core traits (WorkQueue, Reader, Indexer)
+├── core/                         # Shared abstractions
+│   ├── pf-types/                # Core types (WorkItem, Batch, Checkpoint)
+│   ├── pf-error/                # Error types and classification
+│   └── pf-traits/               # Core traits (WorkQueue, Reader, Indexer)
+├── adapters/                    # Pluggable implementations
 │   ├── queue/
-│   │   ├── pf-queue-memory/  # In-memory queue (dev/test)
-│   │   └── pf-queue-sqs/     # AWS SQS queue (production)
+│   │   ├── pf-queue-memory/     # In-memory queue (dev/test)
+│   │   └── pf-queue-sqs/        # AWS SQS queue (production)
 │   ├── reader/
-│   │   ├── pf-reader-parquet/  # Streaming Parquet reader
-│   │   └── pf-reader-ndjson/   # Streaming NDJSON reader
+│   │   ├── pf-reader-parquet/   # Streaming Parquet reader
+│   │   └── pf-reader-ndjson/    # Streaming NDJSON reader
 │   ├── indexer/
-│   │   ├── pf-indexer-es/      # Elasticsearch bulk indexer
-│   │   └── pf-indexer-stdout/  # Stdout for debugging
-│   ├── transform/
-│   │   ├── pf-transform/     # Rhai transform engine
-│   │   └── pf-enrichment/    # Enrichment tables
-│   ├── orchestration/
-│   │   ├── pf-file-processor/  # Per-file processing
-│   │   ├── pf-worker/          # Worker pool management
-│   │   └── pf-discoverer/      # S3 file discovery
-│   └── support/
-│       ├── pf-accumulator/   # Batch accumulator
-│       ├── pf-metrics/       # Prometheus metrics
-│       ├── pf-arrow-utils/   # Arrow helpers
-│       └── pf-dlq/           # DLQ processors
-├── cli/
-│   ├── discoverer/           # pf-discoverer CLI binary
-│   ├── worker/               # pf-worker CLI binary
-│   ├── transform/            # pf-transform CLI binary
-│   └── common/               # Shared CLI utilities
-└── tests/                    # Integration tests
+│   │   ├── pf-indexer-es/       # Elasticsearch bulk indexer
+│   │   └── pf-indexer-stdout/   # Stdout for debugging
+│   └── transform/
+│       ├── pf-transform/        # Rhai transform engine
+│       └── pf-enrichment/       # Enrichment tables
+├── support/                     # Cross-cutting utilities
+│   ├── pf-accumulator/          # Batch accumulator
+│   ├── pf-metrics/              # OpenTelemetry metrics
+│   ├── pf-arrow-utils/          # Arrow helpers
+│   └── pf-dlq/                  # DLQ processors
+├── components/                  # Runtime components
+│   └── centipede/              # S3→ES pipeline component
+│       ├── discoverer/          # S3 file discovery
+│       ├── worker/              # Data processing worker
+│       ├── file-processor/      # File processing orchestration
+│       ├── cli/                 # CLI binaries
+│       ├── docker/              # Dockerfiles
+│       └── tests/integration/   # Integration tests
+├── docker/                      # Shared Docker utilities
+└── infra/                       # Infrastructure (Terraform)
 ```
 
 ## Building

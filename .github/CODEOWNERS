@@ -1,0 +1,17 @@
+# CODEOWNERS - Define code ownership for review requirements
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Platform team owns shared infrastructure
+/core/                      @platform-team
+/adapters/                  @platform-team
+/support/                   @platform-team
+/Cargo.toml                 @platform-team
+/Cargo.lock                 @platform-team
+/.github/                   @platform-team
+
+# Component teams own their components
+/components/centipede/      @centipede-team
+
+# Shared documentation
+/docs/                      @platform-team
+/README.md                  @platform-team
