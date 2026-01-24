@@ -11,10 +11,10 @@ members = [
     "adapters/indexer/*",
     # Adapters - Transform
     "adapters/transform/*",
+    # Support
+    "support/*",
     # Orchestration (to be moved to components)
     "crates/orchestration/*",
-    # Support (to be moved)
-    "crates/support/*",
     # CLI (to be moved to components)
     "cli",
     "cli/common",
