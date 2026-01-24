@@ -12,8 +12,8 @@ path = "src/main.rs"
 
 [dependencies]
 # Internal crates
-pf-transform = { path = "../../crates/transform/pf-transform" }
-pf-enrichment = { path = "../../crates/transform/pf-enrichment" }
+pf-transform = { path = "../../adapters/transform/pf-transform" }
+pf-enrichment = { path = "../../adapters/transform/pf-enrichment" }
 pf-traits = { path = "../../core/pf-traits" }
 pf-error = { path = "../../core/pf-error" }
 

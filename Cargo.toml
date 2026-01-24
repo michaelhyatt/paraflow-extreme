@@ -3,11 +3,14 @@ resolver = "2"
 members = [
     # Core
     "core/*",
-    # Adapters (to be moved)
-    "crates/queue/*",
-    "crates/reader/*",
-    "crates/indexer/*",
-    "crates/transform/*",
+    # Adapters - Queue
+    "adapters/queue/*",
+    # Adapters - Reader
+    "adapters/reader/*",
+    # Adapters - Indexer
+    "adapters/indexer/*",
+    # Adapters - Transform
+    "adapters/transform/*",
     # Orchestration (to be moved to components)
     "crates/orchestration/*",
     # Support (to be moved)

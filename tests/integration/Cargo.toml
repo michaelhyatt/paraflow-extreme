@@ -37,4 +37,4 @@ pf-traits = { workspace = true }
 pf-error = { workspace = true }
 pf-worker = { path = "../../crates/orchestration/pf-worker" }
 pf-discoverer = { path = "../../crates/orchestration/pf-discoverer" }
-pf-reader-ndjson = { path = "../../crates/reader/pf-reader-ndjson" }
+pf-reader-ndjson = { path = "../../adapters/reader/pf-reader-ndjson" }
