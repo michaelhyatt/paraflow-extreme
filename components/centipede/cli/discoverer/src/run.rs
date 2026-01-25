@@ -5,10 +5,10 @@ use futures::{StreamExt, pin_mut};
 use pf_discoverer::filter::parse_date;
 use pf_discoverer::partition::{PartitionFilters, PartitioningExpression, expand_all_prefixes};
 use pf_discoverer::{
-    CompositeFilter, DateFilter, DiscoveredFile, DiscoveryConfig, DiscoveryStats, Filter,
-    HeartbeatLoop, Output, ParallelConfig, ParallelLister, PatternFilter, S3Config, SizeFilter,
-    SqsConfig, SqsOutput, StdoutOutput, StepFunctionsCallback, StepFunctionsConfig,
-    create_s3_client,
+    CallbackConfig, CompositeFilter, DateFilter, DiscoveredFile, DiscoveryConfig, DiscoveryStats,
+    Filter, HeartbeatLoop, HttpCallback, Output, ParallelConfig, ParallelLister, PatternFilter,
+    S3Config, SizeFilter, SqsConfig, SqsOutput, StdoutOutput, StepFunctionsCallback,
+    StepFunctionsConfig, create_s3_client,
 };
 use serde::Serialize;
 use std::time::Duration;
@@ -51,6 +51,14 @@ pub async fn execute(args: Cli) -> Result<DiscoveryStats> {
     // Initialize Step Functions callback if task token is provided
     let sfn_callback = StepFunctionsCallback::new(&sfn_config).await?;
 
+    // Build HTTP callback configuration
+    let http_callback_config = CallbackConfig::new(args.callback_url.clone())
+        .with_token(args.callback_token.clone())
+        .with_job_id(args.job_id.clone());
+
+    // Initialize HTTP callback if URL is provided
+    let http_callback = HttpCallback::new(&http_callback_config)?;
+
     // Start heartbeat loop if Step Functions is enabled
     let heartbeat_loop = if let Some(ref callback) = sfn_callback {
         let heartbeat = HeartbeatLoop::start(
@@ -91,6 +99,26 @@ pub async fn execute(args: Cli) -> Result<DiscoveryStats> {
                 .await
             {
                 error!(error = %sfn_err, "Failed to send Step Functions failure callback");
+            }
+        }
+        _ => {}
+    }
+
+    // Handle HTTP callbacks
+    match (&result, &http_callback) {
+        (Ok(stats), Some(callback)) => {
+            // Send completion callback
+            if let Err(e) = callback
+                .send_completion(stats.files_discovered, stats.files_output, stats.bytes_discovered)
+                .await
+            {
+                error!(error = %e, "Failed to send HTTP completion callback");
+            }
+        }
+        (Err(e), Some(callback)) => {
+            // Send failure callback
+            if let Err(http_err) = callback.send_failure(&e.to_string()).await {
+                error!(error = %http_err, "Failed to send HTTP failure callback");
             }
         }
         _ => {}

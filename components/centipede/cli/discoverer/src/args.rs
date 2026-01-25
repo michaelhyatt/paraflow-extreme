@@ -187,6 +187,25 @@ pub struct Cli {
     #[arg(long, env = "PF_TASK_TOKEN")]
     pub task_token: Option<String>,
 
+    // === HTTP Callback Integration ===
+    /// HTTP callback URL for completion notification.
+    ///
+    /// When provided, the discoverer will POST a completion callback
+    /// to {callback_url}/internal/jobs/{job_id}/discovery/complete
+    /// with discovery statistics.
+    #[arg(long, env = "PF_API_CALLBACK_URL")]
+    pub callback_url: Option<String>,
+
+    /// Bearer token for HTTP callback authorization.
+    #[arg(long, env = "PF_INTERNAL_API_TOKEN")]
+    pub callback_token: Option<String>,
+
+    /// Job ID for callback payload and metrics.
+    ///
+    /// Used in HTTP callbacks to identify the job being processed.
+    #[arg(long, env = "PF_JOB_ID")]
+    pub job_id: Option<String>,
+
     // === Logging Options ===
     /// Log level
     #[arg(short = 'l', long, value_enum, default_value = "info")]

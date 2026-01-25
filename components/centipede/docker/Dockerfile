@@ -12,9 +12,16 @@ RUN apt-get update && apt-get install -y \
 
 # Copy manifests first for dependency caching
 COPY Cargo.toml Cargo.lock ./
-COPY crates/ crates/
-COPY cli/ cli/
-COPY tests/ tests/
+
+# Copy all workspace members matching the actual directory structure
+# Core crates
+COPY core/ core/
+# Adapter crates
+COPY adapters/ adapters/
+# Support crates
+COPY support/ support/
+# Component crates (centipede: discoverer, worker, cli, etc.)
+COPY components/ components/
 
 # Build optimized release binaries with tokio_unstable for full runtime metrics
 # Uses release-max profile for maximum optimization (fat LTO, single codegen unit)

@@ -45,6 +45,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+pub mod callback;
 pub mod config;
 pub mod discoverer;
 pub mod filter;
@@ -66,6 +67,7 @@ pub use s3::{
 };
 pub use sfn::{HeartbeatLoop, StepFunctionsCallback, StepFunctionsConfig};
 pub use stats::DiscoveryStats;
+pub use callback::{CallbackConfig, DiscoveryCompletePayload, DiscoveryStatus, HttpCallback};
 
 /// A discovered file from S3.
 ///
