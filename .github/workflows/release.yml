@@ -70,6 +70,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: components/centipede/docker/Dockerfile
           platforms: linux/arm64
           push: true
           tags: |
