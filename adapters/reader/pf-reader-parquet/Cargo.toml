@@ -1,0 +1,34 @@
+[package]
+name = "pf-reader-parquet"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Parquet file reader with S3 streaming support for paraflow-extreme"
+
+[dependencies]
+# Internal
+pf-types = { workspace = true }
+pf-traits = { workspace = true }
+pf-error = { workspace = true }
+
+# Arrow/Parquet
+arrow = { workspace = true }
+parquet = { workspace = true }
+
+# Async
+tokio = { workspace = true, features = ["fs", "io-util"] }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# Object Store (S3 streaming via byte-range requests)
+object_store = { workspace = true }
+
+# Other
+tracing = { workspace = true }
+bytes = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+tempfile = "3.10"

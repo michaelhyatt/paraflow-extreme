@@ -19,8 +19,10 @@ services:
 
   discoverer:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: components/centipede/docker/Dockerfile
+      args:
+        CARGO_PROFILE: ${CARGO_PROFILE:-release}
     entrypoint: ["pf-discoverer"]
     depends_on:
       localstack:
@@ -44,8 +46,10 @@ services:
 
   worker:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: components/centipede/docker/Dockerfile
+      args:
+        CARGO_PROFILE: ${CARGO_PROFILE:-release}
     depends_on:
       localstack:
         condition: service_healthy

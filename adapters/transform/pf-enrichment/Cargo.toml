@@ -1,0 +1,40 @@
+[package]
+name = "pf-enrichment"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Enrichment tables for Paraflow Extreme transforms"
+
+[dependencies]
+# Internal crates
+pf-error = { path = "../../../core/pf-error" }
+
+# Fast collections
+hashbrown = { workspace = true }
+ahash = { workspace = true }
+
+# IP/CIDR lookups
+ip_network = { workspace = true }
+ip_network_table = { workspace = true }
+
+# Data loading
+csv = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+aws-config = { workspace = true }
+tokio = { workspace = true, features = ["fs"] }
+
+# Rhai integration
+rhai = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+
+# Utilities
+anyhow = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tempfile = "3"
+serde_json = { workspace = true }

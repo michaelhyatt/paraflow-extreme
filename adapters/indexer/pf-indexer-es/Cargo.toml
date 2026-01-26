@@ -1,0 +1,9 @@
+[package]
+name = "pf-indexer-es"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Placeholder for pf-indexer-es"
+
+[dependencies]
