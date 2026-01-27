@@ -78,6 +78,10 @@ pub struct Cli {
     #[arg(long, env = "AWS_SECRET_ACCESS_KEY")]
     pub secret_key: Option<String>,
 
+    /// AWS session token (for temporary/STS credentials)
+    #[arg(long, env = "AWS_SESSION_TOKEN")]
+    pub session_token: Option<String>,
+
     /// AWS profile name
     #[arg(long, env = "AWS_PROFILE")]
     pub profile: Option<String>,

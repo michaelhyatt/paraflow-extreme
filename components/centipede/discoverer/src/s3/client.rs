@@ -26,6 +26,9 @@ pub struct S3Config {
     /// Explicit AWS secret key (optional)
     pub secret_key: Option<String>,
 
+    /// AWS session token for temporary credentials (optional)
+    pub session_token: Option<String>,
+
     /// AWS profile name (optional)
     pub profile: Option<String>,
 
@@ -48,6 +51,7 @@ impl Default for S3Config {
             endpoint: None,
             access_key: None,
             secret_key: None,
+            session_token: None,
             profile: None,
             timeout_secs: 30,
             concurrency: 10,
@@ -88,9 +92,11 @@ impl S3Config {
         mut self,
         access_key: impl Into<String>,
         secret_key: impl Into<String>,
+        session_token: Option<String>,
     ) -> Self {
         self.access_key = Some(access_key.into());
         self.secret_key = Some(secret_key.into());
+        self.session_token = session_token;
         self
     }
 
@@ -140,7 +146,7 @@ pub async fn create_s3_client(config: &S3Config) -> Result<Client> {
         let credentials = aws_sdk_s3::config::Credentials::new(
             access_key,
             secret_key,
-            None,
+            config.session_token.clone(),
             None,
             "pf-discoverer",
         );
@@ -188,7 +194,7 @@ mod tests {
 
     #[test]
     fn test_s3_config_with_credentials() {
-        let config = S3Config::new("test-bucket").with_credentials("access", "secret");
+        let config = S3Config::new("test-bucket").with_credentials("access", "secret", None);
 
         assert_eq!(config.access_key, Some("access".to_string()));
         assert_eq!(config.secret_key, Some("secret".to_string()));

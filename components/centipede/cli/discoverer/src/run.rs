@@ -144,7 +144,7 @@ async fn run_discovery_inner(args: &Cli) -> Result<DiscoveryStats> {
     }
 
     if let (Some(access_key), Some(secret_key)) = (&args.access_key, &args.secret_key) {
-        s3_config = s3_config.with_credentials(access_key, secret_key);
+        s3_config = s3_config.with_credentials(access_key, secret_key, args.session_token.clone());
     }
 
     if let Some(profile) = &args.profile {
